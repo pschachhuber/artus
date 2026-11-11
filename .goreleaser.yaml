@@ -1,0 +1,37 @@
+# Builds the release binaries. Run by .github/workflows/release.yml on a version tag.
+version: 2
+project_name: artus
+
+builds:
+  - main: ./cmd/artus
+    binary: artus
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+# Publish the bare executables (artus_windows_amd64.exe, artus_darwin_arm64, …)
+# so a download is ready to run without unpacking anything.
+archives:
+  - formats: [binary]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  footer: |
+    **Install:** download the file for your system, make it executable on macOS and Linux (`chmod +x artus_*`), and run it.
+    The binaries are not code-signed: on first run macOS and Windows will ask you to confirm. Verify a download against `checksums.txt`.
