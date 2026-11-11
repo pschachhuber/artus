@@ -300,7 +300,7 @@ func TestOpenRouterChat(t *testing.T) {
 		`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"text\":\"mi"}}]}}]}`,
 		`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"lk\"}"}},{"index":1,"id":"call_b","function":{"name":"note","arguments":"{}"}}]}}]}`,
 		`{"choices":[{"delta":{"content":""},"finish_reason":"tool_calls"}]}`,
-		`{"choices":[],"usage":{"prompt_tokens":300,"completion_tokens":40,"cost":0.0012,"prompt_tokens_details":{"cached_tokens":250,"cache_write_tokens":20}}}`,
+		`{"choices":[],"usage":{"prompt_tokens":300,"completion_tokens":40,"cost":0.0012,"prompt_tokens_details":{"cached_tokens":250,"cache_write_tokens":20},"server_tool_use_details":{"web_search_requests":2}}}`,
 		`[DONE]`,
 	)
 	api := newFakeAPI(t, func(n int, body map[string]any) (int, string) {
@@ -344,8 +344,15 @@ func TestOpenRouterChat(t *testing.T) {
 		{Type: ToolResult, ID: "call_a", Text: "saved"}, {Type: ToolResult, ID: "call_b", Text: ""}}})
 	o.Stream(context.Background(), req, func(Delta) {})
 	msgs := api.body(1)["messages"].([]any)
-	if len(msgs) != 5 {
-		t.Fatalf("want system, user, assistant, tool, tool; got %s", jsonOf(msgs))
+	if len(msgs) != 6 {
+		t.Fatalf("want system, user, assistant, tool, tool, note; got %s", jsonOf(msgs))
+	}
+	// A provider-side search leaves no trace in the reply, so the model is told on the next turn.
+	if searched := resp.Message.Blocks[1]; searched.Type != Opaque || searched.Name != "web_search" || searched.Text != "2 web searches" {
+		t.Errorf("the search should be recorded on the reply: %+v", resp.Message.Blocks)
+	}
+	if note := jsonOf(msgs[5]); !strings.Contains(note, `"role":"user"`) || !strings.Contains(note, "based on 2 web searches") {
+		t.Errorf("the next turn should say the reply rested on a search: %s", note)
 	}
 	assistant := jsonOf(msgs[2])
 	if !strings.Contains(assistant, `"reasoning_details":[{`) || !strings.Contains(assistant, `"signature":"SIG"`) || !strings.Contains(assistant, `"tool_calls"`) {

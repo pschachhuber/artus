@@ -79,6 +79,11 @@ func userMessage(in Input, home *store.Home) llm.Message {
 	return msg
 }
 
+// checkpointEvery is how often, in model requests, a long run is reminded
+// that stopping with a partial result is an option. It costs one line and
+// stops a model that is hunting in circles long before the hard limit does.
+const checkpointEvery = 20
+
 // execute runs a chat from one input until the model stops asking for tools
 // and nothing is queued.
 func (e *Engine) execute(ctx context.Context, r *run, meta store.ChatMeta, in Input) {
@@ -100,7 +105,7 @@ func (e *Engine) execute(ctx context.Context, r *run, meta store.ChatMeta, in In
 			break
 		}
 		if turn > cfg.Limits.Turns {
-			e.note(meta.ID, "error", fmt.Sprintf("Stopped after %d model requests (limits.turns).", cfg.Limits.Turns))
+			e.note(meta.ID, "error", fmt.Sprintf("Paused after %d model requests without finishing (the limit is limits.turns in Settings). Reply \"continue\" to carry on, or say what to do differently.", cfg.Limits.Turns))
 			break
 		}
 		if meta.Kind == store.KindTask && cfg.Limits.TaskTokens > 0 && r.spent > cfg.Limits.TaskTokens {
@@ -135,6 +140,10 @@ func (e *Engine) execute(ctx context.Context, r *run, meta store.ChatMeta, in In
 				warn := strings.Join(restored, ", ") + " belongs to the user and was changed outside Settings; it has been restored. Do not modify it by any means: tell the user what you wanted to change and that they can change it in Settings."
 				results = append(results, llm.Block{Type: llm.Text, Text: "<harness>" + warn + "</harness>"})
 				e.emit(meta.ID, "alert", warn)
+			}
+			if turn%checkpointEvery == 0 {
+				results = append(results, llm.Block{Type: llm.Text, Text: fmt.Sprintf(
+					"<harness>Checkpoint: %d model requests so far on this request. If the goal is not within reach, stop now and report what you found, what failed and what is still missing.</harness>", turn)})
 			}
 			e.append(s, llm.Message{Role: "user", Blocks: results}, nil)
 		case resp.Stop == llm.StopRefusal:

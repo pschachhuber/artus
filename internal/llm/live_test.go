@@ -159,3 +159,52 @@ func TestLiveOpenAI(t *testing.T) {
 	p := NewOpenAI(liveKey(t, "OPENAI_API_KEY"))
 	toolLoop(t, p, "openai/gpt-5.6-luna", "gpt-5.6-luna", "low")
 }
+
+// searchLoop asks something only a web search can answer, then replays the
+// reply, which checks that the provider's own search traffic survives a round trip.
+func searchLoop(t *testing.T, p Provider, id, model string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	req := Request{ID: id, Model: model, Effort: "low", WebSearch: true,
+		System:   "Answer briefly. Use web search for anything recent.",
+		Messages: []Message{UserText("Search the web: what is the latest stable release of the Go programming language? Answer with the version number only.")}}
+	first, err := p.Stream(ctx, req, func(Delta) {})
+	if err != nil {
+		t.Fatalf("search request: %v", err)
+	}
+	if !strings.Contains(first.Message.TextOf(), "1.") {
+		t.Errorf("expected a Go version, got %q", first.Message.TextOf())
+	}
+	var kinds []string
+	for _, b := range first.Message.Blocks {
+		kinds = append(kinds, b.Type+":"+b.Name)
+	}
+	t.Logf("blocks=%v usage=%+v text=%q", kinds, first.Usage, first.Message.TextOf())
+	first.Message.Model = id
+	req.Messages = append(req.Messages, first.Message, UserText("Thanks. Reply with just the word OK."))
+	second, err := p.Stream(ctx, req, func(Delta) {})
+	if err != nil {
+		t.Fatalf("replaying a turn that used web search: %v", err)
+	}
+	if !strings.Contains(strings.ToUpper(second.Message.TextOf()), "OK") {
+		t.Errorf("second reply: %q", second.Message.TextOf())
+	}
+}
+
+func TestLiveWebSearch(t *testing.T) {
+	key := liveKey(t, "OPENROUTER_API_KEY")
+	t.Run("messages", func(t *testing.T) {
+		p := NewAnthropic(key)
+		p.Base, p.Bearer = "https://openrouter.ai/api", true
+		searchLoop(t, p, "anthropic/anthropic/claude-haiku-5.5", "anthropic/claude-haiku-5.5")
+	})
+	t.Run("responses", func(t *testing.T) {
+		p := NewOpenAI(key)
+		p.Base = "https://openrouter.ai/api/v1"
+		searchLoop(t, p, "openai/openai/gpt-5.6-luna", "openai/gpt-5.6-luna")
+	})
+	t.Run("chat", func(t *testing.T) {
+		searchLoop(t, NewOpenRouter(key), "openrouter/anthropic/claude-haiku-5.5", "anthropic/claude-haiku-5.5")
+	})
+}

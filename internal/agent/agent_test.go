@@ -691,3 +691,29 @@ func TestHistorySearch(t *testing.T) {
 		t.Error("transcripts should keep <, > and & unescaped so ordinary tools can search them")
 	}
 }
+
+func TestCheckpointAndTurnLimit(t *testing.T) {
+	f := newFixture(t)
+	f.e.Home.UpdateConfig(func(c *store.Config) { c.Limits.Turns = 45 })
+	f.mock.Reply = func(llm.Request) llm.Step {
+		return llm.Step{Calls: []llm.Block{call("glob", `{"pattern":"*.none"}`)}} // never finishes on its own
+	}
+	id := f.say("", "hunt forever")
+	reqs := f.mock.Requests()
+	if len(reqs) != 45 {
+		t.Fatalf("the turn limit should stop the run at 45 requests, got %d", len(reqs))
+	}
+	checkpoints := 0
+	for _, m := range reqs[len(reqs)-1].Messages {
+		if strings.Contains(m.TextOf(), "<harness>Checkpoint: ") {
+			checkpoints++
+		}
+	}
+	if checkpoints != 2 {
+		t.Errorf("want a checkpoint after 20 and 40 requests, got %d", checkpoints)
+	}
+	recs := f.e.Records(id)
+	if last := recs[len(recs)-1]; last.Level != "error" || !strings.Contains(last.Note, "limits.turns") {
+		t.Errorf("the user should be told why the run stopped: %+v", last)
+	}
+}

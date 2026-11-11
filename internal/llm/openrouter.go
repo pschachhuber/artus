@@ -159,6 +159,7 @@ func (o *OpenRouter) send(ctx context.Context, req Request, emit func(Delta)) (*
 	}
 	var text, thinking strings.Builder
 	var calls []*call
+	searches := 0
 	details := map[int]map[string]any{}
 	resp := &Response{Message: Message{Role: "assistant"}, Stop: StopEnd}
 	err = postStream(ctx, o.Base+"/chat/completions", headers, body, func(_ string, data []byte) error {
@@ -195,6 +196,9 @@ func (o *OpenRouter) send(ctx context.Context, req Request, emit func(Delta)) (*
 					Cached int `json:"cached_tokens"`
 					Write  int `json:"cache_write_tokens"`
 				} `json:"prompt_tokens_details"`
+				ServerTools struct {
+					WebSearches int `json:"web_search_requests"`
+				} `json:"server_tool_use_details"`
 			} `json:"usage"`
 		}
 		if json.Unmarshal(data, &chunk) != nil {
@@ -215,6 +219,7 @@ func (o *OpenRouter) send(ctx context.Context, req Request, emit func(Delta)) (*
 		}
 		if u := chunk.Usage; u != nil {
 			resp.Usage = Usage{Input: u.Prompt, Output: u.Completion, CacheRead: u.Details.Cached, CacheWrite: u.Details.Write, Cost: u.Cost}
+			searches = u.ServerTools.WebSearches
 		}
 		for _, choice := range chunk.Choices {
 			d := choice.Delta
@@ -276,6 +281,11 @@ func (o *OpenRouter) send(ctx context.Context, req Request, emit func(Delta)) (*
 		}
 		resp.Message.Blocks = append(resp.Message.Blocks, b)
 	}
+	if searches > 0 {
+		// The search ran on the provider's side and leaves nothing in the reply
+		// itself. Record that it happened: see searchNote.
+		resp.Message.Blocks = append(resp.Message.Blocks, Block{Type: Opaque, Name: "web_search", Text: searchCount(searches)})
+	}
 	if text.Len() > 0 {
 		resp.Message.Blocks = append(resp.Message.Blocks, Block{Type: Text, Text: text.String()})
 	}
@@ -289,6 +299,22 @@ func (o *OpenRouter) send(ctx context.Context, req Request, emit func(Delta)) (*
 		}
 	}
 	return resp, nil
+}
+
+func searchCount(n int) string {
+	if n == 1 {
+		return "1 web search"
+	}
+	return strconv.Itoa(n) + " web searches"
+}
+
+// searchNote tells the model that an earlier reply of its own rested on web
+// searches. Chat completions carry no trace of a provider-side search, and a
+// model that sees a factual answer with no search behind it will disown the
+// answer as made up. The note rides on the next user turn.
+func searchNote(count string) map[string]any {
+	return map[string]any{"type": "text", "text": "<harness>Your previous reply was based on " + count +
+		" run by the provider. The results are not kept in this history.</harness>"}
 }
 
 // mergeReasoning folds one streamed reasoning_details fragment into the
@@ -334,12 +360,17 @@ func (o *OpenRouter) messages(req Request, cache, vision, files bool) []any {
 		}
 		out = append(out, map[string]any{"role": "system", "content": []any{part}})
 	}
+	searched := "" // set by an assistant turn that used web search, consumed by the next user turn
 	for _, m := range normalize(req.Messages) {
 		if m.Role == "assistant" {
 			msg := map[string]any{"role": "assistant"}
 			var calls []any
 			for _, b := range m.Blocks {
 				switch b.Type {
+				case Opaque:
+					if b.Name == "web_search" {
+						searched = b.Text
+					}
 				case Text:
 					msg["content"] = str(msg["content"]) + b.Text
 				case ToolCall:
@@ -385,6 +416,10 @@ func (o *OpenRouter) messages(req Request, cache, vision, files bool) []any {
 					parts = append(parts, map[string]any{"type": "text", "text": "[" + b.Path + " cannot be shown to this model; inspect it with tools]"})
 				}
 			}
+		}
+		if searched != "" {
+			parts = append([]any{searchNote(searched)}, parts...)
+			searched = ""
 		}
 		if len(parts) > 0 {
 			out = append(out, map[string]any{"role": "user", "content": parts})
