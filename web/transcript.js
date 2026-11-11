@@ -402,18 +402,22 @@ export class Transcript {
     return card;
   }
 
-  /** Pairs running agent calls with the child chats they started: by title, else in order of creation. */
+  /**
+   * Pairs running agent calls with the child chats they started. Children
+   * appear in any order, so the pairing goes by title; a single call and a
+   * single child left over belong together.
+   */
   linkAgents() {
     const waiting = [...this.cards.values()].filter(c => c.name === 'agent' && !c.child && ['running', 'done'].includes(c.state));
     if (!waiting.length) return;
     const claimed = new Set([...this.cards.values()].map(c => c.child));
-    const free = [...S.chats.values()].filter(c => c.parent === this.id && !claimed.has(c.id))
-      .sort((a, b) => a.created.localeCompare(b.created));
-    for (const card of waiting) {
-      const want = card.params.name || promptTitle(card.params.prompt);
-      const at = Math.max(free.findIndex(c => c.title === want), 0);
-      if (free[at]) card.setChild(free.splice(at, 1)[0].id);
-    }
+    const free = [...S.chats.values()].filter(c => c.parent === this.id && !claimed.has(c.id));
+    const unmatched = waiting.filter(card => {
+      const at = free.findIndex(c => c.title === (card.params.name || promptTitle(card.params.prompt)));
+      if (at >= 0) card.setChild(free.splice(at, 1)[0].id);
+      return at < 0;
+    });
+    if (unmatched.length === 1 && free.length === 1) unmatched[0].setChild(free[0].id);
   }
 
   // ---- the reply in progress

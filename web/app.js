@@ -92,13 +92,16 @@ function onServerEvent(ev) {
 
 // ---------------------------------------------------------------- routing
 
-const go = hash => { if (location.hash === hash) route(); else location.hash = hash; };
+/** The page and id a hash names: "#/tasks/tea" is the tasks page with id "tea". */
+function parseHash() {
+  const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(p => { try { return decodeURIComponent(p); } catch { return p; } });
+  return {page: VIEWS[parts[0]] ? parts[0] : 'chat', id: parts.slice(1).join('/')};
+}
 
+/** Mounts the view for the current hash, or lets the mounted one switch to the new id. */
 function route() {
   while (closeTopLayer());
-  const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(p => { try { return decodeURIComponent(p); } catch { return p; } });
-  const page = VIEWS[parts[0]] ? parts[0] : 'chat';
-  const id = parts.slice(1).join('/');
+  const {page, id} = parseHash();
   const same = view && S.route.page === page;
   S.route = {page, id};
   if (!(same && view.update?.(id))) {
@@ -108,6 +111,18 @@ function route() {
   }
   document.body.classList.remove('drawer-open');
   changed();
+}
+
+/** Navigates at once, without waiting for the hashchange event; the same hash starts the view afresh. */
+function go(hash) {
+  if (location.hash !== hash) location.hash = hash;
+  route();
+}
+
+/** A hashchange that go() or a view (binding itself to a new chat) already acted on needs nothing more. */
+function onHashChange() {
+  const {page, id} = parseHash();
+  if (page !== S.route.page || id !== S.route.id) route();
 }
 
 // ---------------------------------------------------------------- sidebar
@@ -213,7 +228,7 @@ async function start() {
   const scrim = document.getElementById('scrim');
   scrim.addEventListener('click', () => document.body.classList.remove('drawer-open'));
 
-  addEventListener('hashchange', route);
+  addEventListener('hashchange', onHashChange);
   addEventListener('keydown', e => {
     const typing = e.target.matches?.('input, textarea, select');
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {

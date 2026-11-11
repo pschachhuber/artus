@@ -231,7 +231,7 @@ func TestChangeLogAndRevert(t *testing.T) {
 	}
 	h := openHome(t)
 	os.WriteFile(h.Path(MemoryFile), []byte("v1\n"), 0o600)
-	os.WriteFile(h.Path(SecretsFile), []byte("KEY=secret-value\n"), 0o600)
+	h.WriteLocked(SecretsFile, []byte("KEY=secret-value\n"))
 	os.WriteFile(h.Path("chats", "x.jsonl"), []byte("{}\n"), 0o600)
 	if !h.Snapshot("first") {
 		t.Fatal("expected a snapshot")
@@ -263,5 +263,24 @@ func TestChangeLogAndRevert(t *testing.T) {
 	}
 	if _, err := h.Diff("--help"); err == nil {
 		t.Error("an option-like hash must be rejected")
+	}
+
+	// File names with spaces stay whole, and reverting a change to the
+	// user's instructions is not mistaken for tampering.
+	os.WriteFile(h.Path("topics", "home office.md"), []byte("desk\n"), 0o600)
+	h.WriteLocked(InstructionsFile, []byte("Be brief.\n"))
+	h.Snapshot("third")
+	changes = h.Changes(1)
+	if got := strings.Join(changes[0].Files, ","); got != "instructions.md,topics/home office.md" {
+		t.Errorf("files = %q", got)
+	}
+	if err := h.Revert(changes[0].Hash); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.Restore(); len(got) != 0 {
+		t.Errorf("a revert the user asked for was undone: %v", got)
+	}
+	if b, _ := os.ReadFile(h.Path(InstructionsFile)); len(b) != 0 {
+		t.Errorf("after revert instructions.md = %q", b)
 	}
 }

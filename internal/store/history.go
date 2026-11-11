@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -36,9 +37,12 @@ type Change struct {
 }
 
 func (h *Home) git(args ...string) (string, error) {
+	if !h.hasGit {
+		return "", errors.New("git is not installed")
+	}
 	cmd := exec.Command("git", append([]string{
 		"-c", "user.name=Artus", "-c", "user.email=artus@localhost",
-		"-c", "commit.gpgsign=false", "-c", "core.autocrlf=false",
+		"-c", "commit.gpgsign=false", "-c", "core.autocrlf=false", "-c", "core.quotepath=false",
 	}, args...)...)
 	cmd.Dir = h.Dir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
@@ -50,8 +54,21 @@ func (h *Home) git(args ...string) (string, error) {
 	return out.String(), nil
 }
 
+// gitUsable reports whether git can be run. On macOS without the developer
+// tools /usr/bin/git is a stub that opens an install dialog; that is not git.
+func gitUsable() bool {
+	path, err := exec.LookPath("git")
+	if err != nil {
+		return false
+	}
+	if runtime.GOOS == "darwin" && path == "/usr/bin/git" {
+		return exec.Command("xcode-select", "-p").Run() == nil
+	}
+	return true
+}
+
 func (h *Home) initHistory() {
-	if _, err := exec.LookPath("git"); err != nil {
+	if h.hasGit = gitUsable(); !h.hasGit {
 		return
 	}
 	if err := os.WriteFile(h.Path(".gitignore"), []byte(gitignore), 0o600); err != nil {
@@ -95,7 +112,13 @@ func (h *Home) Changes(limit int) []Change {
 			continue
 		}
 		t, _ := time.Parse(time.RFC3339, parts[1])
-		changes = append(changes, Change{Hash: parts[0], Time: t, Message: parts[2], Files: strings.Fields(files)})
+		c := Change{Hash: parts[0], Time: t, Message: parts[2]}
+		for _, file := range strings.Split(files, "\n") {
+			if file = strings.TrimSpace(file); file != "" {
+				c.Files = append(c.Files, file)
+			}
+		}
+		changes = append(changes, c)
 	}
 	return changes
 }
@@ -117,6 +140,12 @@ func (h *Home) Revert(hash string) error {
 	if _, err := h.git("revert", "--no-edit", hash); err != nil {
 		h.git("revert", "--abort")
 		return fmt.Errorf("cannot revert cleanly, later changes touch the same lines: %w", err)
+	}
+	// The user asked for this, so what it did to their instructions stands.
+	if b, err := os.ReadFile(h.Path(InstructionsFile)); err == nil {
+		h.mu.Lock()
+		h.guard[InstructionsFile] = b
+		h.mu.Unlock()
 	}
 	return nil
 }

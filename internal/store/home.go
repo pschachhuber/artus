@@ -21,9 +21,10 @@ import (
 type Home struct {
 	Dir string
 
-	mu    sync.Mutex
-	cfg   Config
-	guard map[string][]byte // locked files as the harness last wrote them
+	mu     sync.Mutex
+	cfg    Config
+	guard  map[string][]byte // locked files as the harness last wrote them
+	hasGit bool              // whether the change history is available
 }
 
 // Locked files and directories, relative to the home. The agent may not write
