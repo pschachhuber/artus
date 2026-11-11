@@ -232,7 +232,7 @@ func (e *Engine) Compact(chatID string) error {
 		return fmt.Errorf("the chat is busy")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &run{chat: chatID, root: chatID, cancel: cancel, done: make(chan struct{}), allowed: map[string]bool{}}
+	r := &run{chat: chatID, root: chatID, cancel: cancel, done: make(chan struct{})}
 	r.live.Started = time.Now()
 	e.runs[chatID] = r
 	e.mu.Unlock()

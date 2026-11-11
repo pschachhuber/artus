@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 )
@@ -43,10 +42,15 @@ func (s *Server) browserView(w http.ResponseWriter, r *http.Request) {
 	const boundary = "artusframe"
 	w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary="+boundary)
 	w.Header().Set("Cache-Control", "no-store")
+	// Browsers show a part only once the boundary after it has arrived, so
+	// each frame is followed by its closing boundary at once. Otherwise the
+	// picture runs one frame behind, and a still page shows nothing at all.
+	fmt.Fprintf(w, "--%s\r\n", boundary)
+	flusher.Flush()
 	err := s.Browser.Screencast(r.Context(), session, func(jpeg []byte) {
-		fmt.Fprintf(w, "--%s\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n", boundary, len(jpeg))
+		fmt.Fprintf(w, "Content-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n", len(jpeg))
 		w.Write(jpeg)
-		io.WriteString(w, "\r\n")
+		fmt.Fprintf(w, "\r\n--%s\r\n", boundary)
 		flusher.Flush()
 	})
 	if err != nil && r.Context().Err() == nil {

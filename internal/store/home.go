@@ -351,7 +351,7 @@ func (h *Home) Config() Config {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	c := h.cfg
-	c.AllowedModels = append([]string(nil), h.cfg.AllowedModels...)
+	c.AllowedModels = append([]string{}, h.cfg.AllowedModels...)
 	return c
 }
 

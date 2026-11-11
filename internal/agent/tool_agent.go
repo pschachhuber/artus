@@ -101,7 +101,7 @@ func (e *Engine) spawn(ctx context.Context, parent *run, parentMeta store.ChatMe
 		return "", "", err
 	}
 	childCtx, cancel := context.WithCancel(ctx)
-	r := &run{chat: meta.ID, root: parent.root, cancel: cancel, done: make(chan struct{}), allowed: map[string]bool{}}
+	r := &run{chat: meta.ID, root: parent.root, cancel: cancel, done: make(chan struct{})}
 	r.live.Started = time.Now()
 	e.mu.Lock()
 	e.runs[meta.ID] = r

@@ -342,7 +342,7 @@ export class Transcript {
     for (const b of rec.msg.blocks) {
       const agent = b.type === 'tool_call' && b.name === 'agent';
       if (!agent) lanes = null;
-      if (b.type === 'thinking' && b.text) el.append(thinkingBlock(b.text, thoughtMs));
+      if (b.type === 'thinking' && b.text) el.append(thinkingBlock(b.text, thoughtMs || b.ui?.ms));
       else if (b.type === 'text' && b.text.trim()) { texts.push(b.text); el.append(h('div.prose', renderMarkdown(b.text))); }
       else if (b.type === 'opaque' && b.name === 'web_search') el.append(h('div.searched', icon('globe', 14), b.text ? 'Searched: ' + b.text : 'Searched the web'));
       else if (agent) (lanes ||= el.appendChild(h('div.lanes'))).append(this.addCard(b).el); // parallel sub-agents sit side by side

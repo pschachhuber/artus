@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -33,7 +35,7 @@ func (s *Server) listChats(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, c)
 	}
-	reply(w, map[string]any{"chats": out, "running": s.Engine.Running()})
+	reply(w, map[string]any{"chats": list(out), "running": list(s.Engine.Running())})
 }
 
 func (s *Server) createChat(w http.ResponseWriter, r *http.Request) {
@@ -211,13 +213,50 @@ func (s *Server) forkChat(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusInternalServerError, err)
 		return
 	}
-	for _, rec := range raw[:in.Records] {
+	for _, rec := range s.carryUploads(src.ID, meta.ID, raw[:in.Records]) {
 		if err := s.Home.Append(meta.ID, rec); err != nil {
 			refuse(w, http.StatusInternalServerError, err)
 			return
 		}
 	}
 	reply(w, meta)
+}
+
+// carryUploads gives a forked chat its own attachments and points the copied
+// records at them, so that deleting either chat leaves the other whole.
+func (s *Server) carryUploads(src, dst string, recs []json.RawMessage) []json.RawMessage {
+	from, to := s.Home.Path("uploads", src), s.Home.Path("uploads", dst)
+	oldRef, newRef := inJSON(from+string(filepath.Separator)), inJSON(to+string(filepath.Separator))
+	out, used := make([]json.RawMessage, len(recs)), false
+	for i, rec := range recs {
+		out[i] = bytes.ReplaceAll(rec, oldRef, newRef)
+		used = used || !bytes.Equal(out[i], rec)
+	}
+	entries, err := os.ReadDir(from)
+	if !used || err != nil || os.MkdirAll(to, 0o700) != nil {
+		return recs
+	}
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		a, b := filepath.Join(from, e.Name()), filepath.Join(to, e.Name())
+		if os.Link(a, b) != nil { // uploads never change, so a hard link is as good as a copy
+			if data, err := os.ReadFile(a); err == nil {
+				os.WriteFile(b, data, 0o600)
+			}
+		}
+	}
+	return out
+}
+
+// inJSON returns text the way it appears inside a string of a transcript.
+func inJSON(text string) []byte {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	enc.Encode(text)
+	return bytes.Trim(bytes.TrimSpace(b.Bytes()), `"`)
 }
 
 func (s *Server) chatContext(w http.ResponseWriter, r *http.Request) {
@@ -270,6 +309,29 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, agent.Attachment{Path: path, Name: filepath.Base(path), Type: mediaType(path), Size: size})
+}
+
+// removeUpload deletes an attachment that was added to the composer and then
+// taken out again. One that was sent is part of the conversation and stays.
+func (s *Server) removeUpload(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	raw, err := s.Home.Records(id)
+	if err != nil {
+		refuse(w, http.StatusNotFound, errors.New("no such chat"))
+		return
+	}
+	path := s.Home.Path("uploads", id, safeName(r.PathValue("name")))
+	for _, rec := range raw {
+		if bytes.Contains(rec, inJSON(path)) {
+			refuse(w, http.StatusConflict, errors.New("this file is part of the conversation"))
+			return
+		}
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		refuse(w, http.StatusInternalServerError, err)
+		return
+	}
+	reply(w, map[string]bool{"ok": true})
 }
 
 // safeName reduces an uploaded file name to something harmless on every
@@ -361,7 +423,12 @@ func (s *Server) userPath(p string, readOnly bool) (string, bool) {
 		return "", false
 	}
 	if !filepath.IsAbs(p) {
-		p = s.Home.Path(filepath.FromSlash(p))
+		// Relative paths are relative to the home and may not leave it. This
+		// also turns away /rooted paths and device names on Windows.
+		if p = filepath.FromSlash(p); !filepath.IsLocal(p) {
+			return "", false
+		}
+		p = s.Home.Path(p)
 	}
 	p = filepath.Clean(p)
 	rel, ok := s.Home.Rel(p)

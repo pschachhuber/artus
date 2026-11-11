@@ -29,7 +29,7 @@ type fsEntry struct {
 func (s *Server) fsList(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Query().Get("path")
 	if p == "" {
-		reply(w, map[string]any{"topics": s.Home.Topics(), "skills": s.Home.Skills()})
+		reply(w, map[string]any{"topics": list(s.Home.Topics()), "skills": list(s.Home.Skills())})
 		return
 	}
 	dir, ok := s.userPath(p, true)
@@ -348,18 +348,18 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 		if name != "mock" && !s.Secrets.Has(strings.ToUpper(name)+"_API_KEY") {
 			continue
 		}
-		list, err := s.LLM.Models(r.Context(), name, refresh)
+		found, err := s.LLM.Models(r.Context(), name, refresh)
 		if err != nil {
 			errs[name] = err.Error()
 		}
-		models = append(models, list...)
+		models = append(models, found...)
 	}
-	reply(w, map[string]any{"models": models, "errors": errs})
+	reply(w, map[string]any{"models": list(models), "errors": errs})
 }
 
 func (s *Server) listSecrets(w http.ResponseWriter, r *http.Request) {
 	cfg := s.Home.Config().Secrets
-	reply(w, map[string]any{"secrets": s.Secrets.Names(), "backend": cfg.Backend, "vault": cfg.Vault})
+	reply(w, map[string]any{"secrets": list(s.Secrets.Names()), "backend": cfg.Backend, "vault": cfg.Vault})
 }
 
 func (s *Server) putSecret(w http.ResponseWriter, r *http.Request) {
@@ -389,11 +389,7 @@ func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listChanges(w http.ResponseWriter, r *http.Request) {
-	changes := s.Home.Changes(100)
-	if changes == nil {
-		changes = []store.Change{}
-	}
-	reply(w, map[string]any{"changes": changes})
+	reply(w, map[string]any{"changes": list(s.Home.Changes(100))})
 }
 
 func (s *Server) getChange(w http.ResponseWriter, r *http.Request) {

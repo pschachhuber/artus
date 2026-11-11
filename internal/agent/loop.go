@@ -172,6 +172,13 @@ func (e *Engine) execute(ctx context.Context, r *run, meta store.ChatMeta, in In
 			}
 		}
 	}
+	if ctx.Err() != nil {
+		// Stop means stop: what was queued stays in the conversation, where the
+		// next message picks it up, but it does not start the agent again.
+		for _, q := range e.drain(r) {
+			e.append(s, userMessage(q, e.Home), nil)
+		}
+	}
 	if ctx.Err() == nil && e.shouldCompact(s) {
 		if err := e.compact(ctx, r, s, false); err != nil && ctx.Err() == nil {
 			e.note(meta.ID, "error", "Compaction failed: "+err.Error())
@@ -245,6 +252,7 @@ func (e *Engine) request(ctx context.Context, r *run, s *session) (*llm.Response
 		ID: s.meta.Model, Model: model, Effort: s.meta.Effort, System: s.system, Messages: s.messages,
 		Tools: s.tools, WebSearch: e.Home.Config().WebSearch, Cache: s.meta.ID,
 	}
+	var thinkFrom, thinkTo time.Time // when reasoning streamed, to show how long it took
 	emit := func(d llm.Delta) {
 		r.mu.Lock()
 		switch d.Kind {
@@ -253,6 +261,9 @@ func (e *Engine) request(ctx context.Context, r *run, s *session) (*llm.Response
 			r.live.State = "writing"
 		case llm.Thinking:
 			r.live.Thinking += d.Text
+			if thinkTo = time.Now(); thinkFrom.IsZero() {
+				thinkFrom = thinkTo
+			}
 		case "tool":
 			if d.Name != "" {
 				r.live.Tools = append(r.live.Tools, LiveTool{ID: d.ID, Name: d.Name})
@@ -264,8 +275,15 @@ func (e *Engine) request(ctx context.Context, r *run, s *session) (*llm.Response
 	compacted := false
 	for attempt := 0; ; attempt++ {
 		e.setState(r, "thinking", "")
+		thinkFrom, thinkTo = time.Time{}, time.Time{}
 		resp, err := provider.Stream(ctx, req, emit)
 		if err == nil {
+			for i, b := range resp.Message.Blocks {
+				if b.Type == llm.Thinking && !thinkFrom.IsZero() {
+					resp.Message.Blocks[i].UI, _ = json.Marshal(map[string]int64{"ms": max(thinkTo.Sub(thinkFrom).Milliseconds(), 1)})
+					break
+				}
+			}
 			return resp, nil
 		}
 		if ctx.Err() != nil {
@@ -385,9 +403,12 @@ func (e *Engine) runTool(ctx context.Context, r *run, s *session, tools map[stri
 		switch e.ask(ctx, r, Ask{Kind: "approval", Tool: c.Name, Input: c.Input}) {
 		case "allow":
 		case "always":
-			r.mu.Lock()
-			r.allowed[c.Name] = true
-			r.mu.Unlock()
+			e.mu.Lock()
+			if e.allowed[r.root] == nil {
+				e.allowed[r.root] = map[string]bool{}
+			}
+			e.allowed[r.root][c.Name] = true
+			e.mu.Unlock()
 		default:
 			return Result{Text: "The user declined this action. Do not retry it; ask what they would like instead.", IsError: true}
 		}
@@ -407,18 +428,12 @@ func (e *Engine) needsApproval(r *run, meta store.ChatMeta, tool string) bool {
 	if e.Home.Config().Autonomy != "confirm" || meta.Kind == store.KindTask {
 		return false
 	}
-	e.mu.Lock()
-	root := e.runs[r.root]
-	e.mu.Unlock()
-	if root == nil {
-		root = r
-	}
-	if rootMeta, err := e.Home.Chat(root.chat); err == nil && rootMeta.Kind == store.KindTask {
+	if rootMeta, err := e.Home.Chat(r.root); err == nil && rootMeta.Kind == store.KindTask {
 		return false
 	}
-	root.mu.Lock()
-	defer root.mu.Unlock()
-	return !root.allowed[tool]
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return !e.allowed[r.root][tool]
 }
 
 // capOutput keeps a tool result within the context budget, saving the full

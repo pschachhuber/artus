@@ -33,9 +33,10 @@ type Engine struct {
 
 	mu      sync.Mutex
 	runs    map[string]*run
-	asks    map[string]chan string // pending approvals and secret requests
-	cwds    map[string]string      // working directory per chat
-	active  int                    // sub-agents running now
+	asks    map[string]chan string     // pending approvals and secret requests
+	cwds    map[string]string          // working directory per chat
+	allowed map[string]map[string]bool // per chat: tools approved "always" in confirm mode
+	active  int                        // sub-agents running now
 	stopped bool
 }
 
@@ -124,9 +125,8 @@ type run struct {
 	mu         sync.Mutex
 	live       Live
 	queue      []Input
-	allowed    map[string]bool // tools the user approved for the rest of this chat
-	spent      int64           // tokens processed by this run
-	lastText   string          // final assistant text, the result of a sub-agent
+	spent      int64  // tokens processed by this run
+	lastText   string // final assistant text, the result of a sub-agent
 	compacting bool
 }
 
@@ -137,7 +137,7 @@ func New(home *store.Home, sec *secrets.Store, reg *llm.Registry, prompt string)
 		Emit: func(Event) {},
 		runs: map[string]*run{},
 		asks: map[string]chan string{},
-		cwds: map[string]string{},
+		cwds: map[string]string{}, allowed: map[string]map[string]bool{},
 	}
 }
 
@@ -187,7 +187,7 @@ func (e *Engine) Send(chatID string, in Input) error {
 		return nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &run{chat: chatID, root: chatID, cancel: cancel, done: make(chan struct{}), allowed: map[string]bool{}}
+	r := &run{chat: chatID, root: chatID, cancel: cancel, done: make(chan struct{})}
 	r.live.Started = time.Now()
 	e.runs[chatID] = r
 	e.mu.Unlock()

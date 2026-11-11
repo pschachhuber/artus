@@ -358,6 +358,7 @@ class ChatView {
 
   removeFile(chip) {
     if (chip.url) URL.revokeObjectURL(chip.url);
+    if (chip.att) api('DELETE', `/api/chats/${this.id}/uploads/${encodeURIComponent(chip.att.name)}`);
     this.files = this.files.filter(f => f !== chip);
     this.renderChips();
   }

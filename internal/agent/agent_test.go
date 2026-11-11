@@ -515,6 +515,12 @@ func TestApprovalAndSecretRequest(t *testing.T) {
 			t.Fatal("the secret value reached the transcript")
 		}
 	}
+	// "Always" holds for the chat, not only for the run it was given in.
+	f.mock.Steps = []llm.Step{{Calls: []llm.Block{call("write", `{"path":"d.txt","content":"4"}`)}}, {Text: "done"}}
+	f.say(meta.ID, "once more")
+	if _, err := os.Stat(f.e.Home.Path("d.txt")); err != nil {
+		t.Error("a tool approved for the chat asked again in the next run")
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, ev := range f.events {
@@ -631,6 +637,25 @@ func TestStopAndErrors(t *testing.T) {
 	recs := f.e.Records(meta.ID)
 	if last := recs[len(recs)-1]; last.T != "note" || last.Note != "Stopped." {
 		t.Errorf("want a Stopped note, got %+v", last)
+	}
+
+	// A message queued behind the run that was stopped is kept in the
+	// conversation but does not start the agent again.
+	f.mock.Steps = []llm.Step{{Text: strings.Repeat("word ", 500)}, {Text: "must not be asked for"}}
+	f.e.Send(meta.ID, Input{Text: "talk more"})
+	time.Sleep(100 * time.Millisecond)
+	f.e.Send(meta.ID, Input{Text: "and then this"})
+	f.e.Stop(meta.ID)
+	time.Sleep(100 * time.Millisecond)
+	if f.e.Live(meta.ID) != nil {
+		t.Fatal("the queued message restarted the run after Stop")
+	}
+	recs = f.e.Records(meta.ID)
+	if last := recs[len(recs)-1]; last.Msg == nil || last.Msg.Role != "user" || !strings.Contains(last.Msg.TextOf(), "and then this") {
+		t.Errorf("the queued message should be kept in the conversation: %+v", last)
+	}
+	if len(f.mock.Steps) != 1 {
+		t.Errorf("the model was asked again after Stop (%d steps left)", len(f.mock.Steps))
 	}
 
 	f.mock.Delay = 0

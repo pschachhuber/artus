@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -365,9 +366,44 @@ func TestUploadsForkAndFiles(t *testing.T) {
 	if got := f.status("POST", "/api/chats/"+chat.ID+"/fork", map[string]int{"records": 999}); got != 400 {
 		t.Errorf("fork past the end: %d", got)
 	}
+	// An attachment taken out of the composer can be deleted; one that was
+	// sent cannot.
+	if got := f.status("DELETE", "/api/chats/"+chat.ID+"/uploads/"+again.Name, nil); got != 200 {
+		t.Errorf("removing an unsent upload: %d", got)
+	}
+	if _, err := os.Stat(again.Path); err == nil {
+		t.Error("the removed upload is still on disk")
+	}
+	if got := f.status("DELETE", "/api/chats/"+chat.ID+"/uploads/"+att.Name, nil); got != 409 {
+		t.Errorf("removing a sent attachment: %d, want 409", got)
+	}
+
+	// A fork gets its own copy of the attachments it refers to, so it
+	// survives the original being deleted.
+	f.call("GET", "/api/chats/"+chat.ID, nil, &state)
+	var whole store.ChatMeta
+	f.call("POST", "/api/chats/"+chat.ID+"/fork", map[string]int{"records": len(state.Records)}, &whole)
 	f.call("DELETE", "/api/chats/"+chat.ID, nil, nil)
 	if _, err := os.Stat(att.Path); err == nil {
 		t.Error("deleting a chat should remove its uploads")
+	}
+	f.call("GET", "/api/chats/"+whole.ID, nil, &state)
+	var carried string
+	for _, rec := range state.Records {
+		if rec.Msg == nil {
+			continue
+		}
+		for _, b := range rec.Msg.Blocks {
+			if b.Type == llm.Image {
+				carried = b.Path
+			}
+		}
+	}
+	if !strings.Contains(filepath.ToSlash(carried), "uploads/"+whole.ID+"/") {
+		t.Fatalf("the fork still points at the original's upload: %q", carried)
+	}
+	if _, err := os.Stat(carried); err != nil {
+		t.Errorf("the fork lost its attachment: %v", err)
 	}
 }
 

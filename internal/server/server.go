@@ -162,6 +162,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/chats/{id}/fork", s.forkChat)
 	mux.HandleFunc("GET /api/chats/{id}/context", s.chatContext)
 	mux.HandleFunc("POST /api/chats/{id}/uploads", s.upload)
+	mux.HandleFunc("DELETE /api/chats/{id}/uploads/{name}", s.removeUpload)
 	mux.HandleFunc("POST /api/asks/{id}", s.answerAsk)
 	mux.HandleFunc("GET /api/file", s.serveFile)
 
@@ -243,8 +244,17 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 		"config":    cfg,
 		"providers": providers,
 		"efforts":   llm.Efforts,
-		"running":   s.Engine.Running(),
+		"running":   list(s.Engine.Running()),
 		"seq":       s.hub.current(),
 		"time":      time.Now(),
 	})
+}
+
+// list returns s, or an empty list for nil, so that JSON clients always get
+// an array.
+func list[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
 }
