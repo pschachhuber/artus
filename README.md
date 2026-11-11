@@ -79,7 +79,7 @@ Artus keeps everything in `~/.artus` (override with `ARTUS_HOME`).
 
 The folder is a git repository that tracks only what the agent may change. Every change is recorded, and you can review and revert each one under **Settings → Changes**. Secrets, configuration, conversations and browser profiles are never tracked.
 
-**What the agent can and cannot change.** It can change memory, topics, skills, its own tools, tasks and their triggers, and browser settings. It cannot change the harness itself, the base system prompt, `instructions.md`, `config.json`, or existing secrets. Its file tools refuse those paths, and if a shell command changes one anyway, Artus restores it and tells both you and the agent.
+**What the agent can and cannot change.** It can change memory, topics, skills, its own tools, tasks and their triggers, and browser settings. It cannot change the harness itself, the base system prompt, `instructions.md`, `config.json`, or existing secrets. Its file tools refuse those paths, and if a shell command changes one anyway, Artus restores it and tells both you and the agent. Artus cannot tell your own text editor from the agent's shell, so change these files under **Settings**, or by hand while Artus is stopped.
 
 There are no skills shipped by default. Skills are for what the agent learns about *your* procedures; everything about Artus itself that a model cannot infer is in the prompt, the tool descriptions and `artus browser help`.
 
