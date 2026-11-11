@@ -23,7 +23,7 @@ var fetchTool = &Tool{
 	Def: llm.Tool{
 		Name: "web_fetch",
 		Description: "Fetch a URL and return its content as readable text (HTML is converted, scripts and styling removed). " +
-			"Other file types are saved to disk and the path returned. For pages that need JavaScript, a login or interaction, use `artus browser` instead.",
+			"Other file types (up to 10 MB) are saved to disk and the path returned. For pages that need JavaScript, a login or interaction, use `artus browser` instead.",
 		Schema: schema(`{"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}`),
 	},
 	Run: runFetch,
@@ -76,6 +76,9 @@ func runFetch(ctx context.Context, c *Call) Result {
 		dst := c.e.Home.Path("tmp", store.RandomID(3)+"-"+name)
 		if err := os.WriteFile(dst, body, 0o600); err != nil {
 			return fail("%v", err)
+		}
+		if truncated {
+			return Result{Text: fmt.Sprintf("%sStopped at 10 MB: the file is larger, and the first 10 MB are in %s. Download it with curl in bash instead.", head, c.e.display(dst)), IsError: true}
 		}
 		return Result{Text: fmt.Sprintf("%sSaved %d bytes to %s. Use read (images, PDFs) or bash to inspect it.", head, len(body), c.e.display(dst)), IsError: resp.StatusCode >= 400}
 	}

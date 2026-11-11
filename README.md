@@ -22,6 +22,7 @@ A minimal personal agent harness. One small binary gives you a local web interfa
 - [Models](#models)
 - [The interface](#the-interface)
 - [Security](#security)
+- [Updates](#updates)
 - [Configuration](#configuration)
 - [Command line](#command-line)
 - [Development](#development)
@@ -196,7 +197,7 @@ Model ids are written `provider/model`: `anthropic/claude-opus-5-5`, `openai/gpt
 - **The allowlist** names the models the agent may choose for sub-agents besides the default.
 - **Refusal fallbacks.** On Claude models where a safety classifier can decline a request, Artus opts into Anthropic's server-side fallback, so a declined request is re-served by a fallback model in the same call.
 
-Requests go straight from your machine to the provider. Artus sends nothing anywhere else.
+Requests go straight from your machine to the provider. Apart from those, Artus contacts only GitHub, to look for updates (see [Updates](#updates)), and Google's Chrome for Testing downloads when it needs a browser and none is installed; the agent itself reaches whatever its tools reach.
 
 ## The interface
 
@@ -218,14 +219,29 @@ Artus is a program that runs shell commands and drives a browser on your behalf.
 - The server listens on `127.0.0.1` only, requires an access token, rejects requests whose `Host` is not this machine (DNS rebinding) and cross-origin writes (CSRF).
 - The interface runs under a strict content security policy with no inline script, and files it displays are served sandboxed.
 - Secret values are kept out of the model's context and the transcripts, as described above.
-- Commands the agent runs get a separate token that reaches only the browser and secret-add endpoints. It cannot change settings.
-- Locked files are refused by the file tools and restored if changed by other means.
+- Commands the agent runs get a separate token that reaches only the browser and secret-add endpoints. It cannot change settings. The interface's own token is replaced by `[secret:ARTUS_TOKEN]` wherever it turns up in what the model reads.
+- Locked files are refused by the file tools and restored if changed by other means. Chat transcripts and their metadata are the harness's too: lines appended to a transcript from outside are cut off, and changed metadata is put back.
+- In "confirm" mode, commands, file edits and schedule changes wait for your approval; a task you approved then runs unattended.
+- The change history runs git with a fixed configuration and no hooks, so nothing planted in `.git` runs.
+- A file the model is shown (an image, a PDF) is checked to be one providers accept and kept as it was seen.
 
 **What it does not**
 
-- **There is no sandbox.** Shell commands run as you. An agent that is tricked by a web page or a file can do what you can do. The locked-file protection is a strong guardrail, not a wall: only a separate operating-system user, a virtual machine or a container makes it absolute. For unattended tasks with real credentials, use one of those.
+- **There is no sandbox.** Shell commands run as you. An agent that is tricked by a web page or a file can do what you can do, including reading `config.json` and using the interface's token without ever seeing it. The locks and guards stop mistakes and casual injection; they are not a wall. Only a separate operating-system user, a virtual machine or a container makes them absolute. For unattended tasks with real credentials, use one of those.
 - **Redaction is best-effort.** It removes known values from text the model sees. It does not stop a command from sending a secret somewhere over the network.
 - **Prompt injection is unsolved.** Artus tells the model to treat tool output as information, and current models mostly comply, but no model is immune. Keep the autonomy setting on "confirm commands" for sensitive work, give the agent a dedicated Proton Pass vault with only what it needs, and set spending limits on your provider keys.
+
+## Updates
+
+Artus looks for new releases on this repository's GitHub Releases page. Under **Settings › Updates** you choose what it does:
+
+- **Automatic** (the default): it checks a minute after starting and then daily, and installs a new version as soon as no chat or task is running and nobody is being waited for in the browser, then restarts. An open interface reconnects by itself and says it was updated.
+- **Notify:** it checks daily and shows "Update available" in the sidebar; you install with one click.
+- **Off:** it never contacts GitHub on its own. **Check now** still works.
+
+A release is installed only if it comes from this project's releases over HTTPS, matches the SHA-256 published in its `checksums.txt`, and the downloaded program starts and reports the expected version. The new program replaces the old one in place, which also works on Windows while Artus runs; the old file is removed at the next start. On macOS and Linux the restart keeps the same process.
+
+`artus update` does the same from a terminal (through the running Artus if there is one), and `artus update --check` only looks. A build from source reports version `dev` and does not update itself. If Artus lives in a folder it may not write to, it says so and links to the release instead.
 
 ## Configuration
 
@@ -236,7 +252,8 @@ Artus is a program that runs shell commands and drives a browser on your behalf.
 | `model`, `effort` | —, `medium` | Default model and reasoning effort |
 | `allowedModels` | `[]` | Models the agent may use for sub-agents |
 | `autonomy` | `auto` | `auto` runs tools freely; `confirm` asks before commands and edits in chats |
-| `webSearch` | `true` | Use the provider's search tool |
+| `webSearch` | `true` | Use the provider's search tool (applies from a chat's next context segment) |
+| `update` | `auto` | `auto`, `notify` or `off`; see [Updates](#updates) |
 | `limits.subagents`, `limits.depth` | `8`, `1` | Sub-agents at once, and how deep they nest |
 | `limits.turns` | `80` | Model requests per run before it pauses; reply "continue" to carry on |
 | `limits.taskTokens` | `3000000` | Token budget of one unattended task run |
@@ -258,6 +275,7 @@ Environment variables: `ARTUS_HOME` moves the data folder; `ARTUS_PROMPT` points
 | `artus url` | Prints the link that signs a browser in |
 | `artus browser <command>` | Drives the browser; `artus browser help` lists commands |
 | `artus secret add NAME` | Stores a secret read from standard input |
+| `artus update [--check]` | Installs the latest release, or only reports it |
 | `artus version` | Prints the version |
 
 ## Development
@@ -286,6 +304,7 @@ To try the interface without a key, start with `ARTUS_MOCK=1` and choose the mod
 | `internal/secrets` | The secret registry, Proton Pass references, redaction, TOTP |
 | `internal/store` | The data folder: configuration, transcripts, indexes, change log |
 | `internal/server` | HTTP API, event stream, access control |
+| `internal/update` | Finding, verifying and installing releases |
 | `web` | The interface |
 | `defaults` | The base system prompt and the default task |
 

@@ -36,16 +36,36 @@ type Change struct {
 	Files   []string  `json:"files"`
 }
 
+// gitConfig is the repository configuration Artus writes before every git
+// call. The agent's shell can reach .git, and git runs what its
+// configuration names (hooks, filters, diff drivers, fsmonitor); with a
+// known configuration and hooks pointed nowhere, git runs nothing else.
+const gitConfig = "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n"
+
 func (h *Home) git(args ...string) (string, error) {
 	if !h.hasGit {
 		return "", errors.New("git is not installed")
 	}
+	if _, err := os.Stat(h.Path(".git", "config")); err == nil {
+		if err := os.WriteFile(h.Path(".git", "config"), []byte(gitConfig), 0o600); err != nil {
+			return "", err
+		}
+	}
 	cmd := exec.Command("git", append([]string{
 		"-c", "user.name=Artus", "-c", "user.email=artus@localhost",
 		"-c", "commit.gpgsign=false", "-c", "core.autocrlf=false", "-c", "core.quotepath=false",
+		"-c", "core.hooksPath=" + os.DevNull, "-c", "core.fsmonitor=false",
 	}, args...)...)
 	cmd.Dir = h.Dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = []string{"GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}
+	for _, kv := range os.Environ() { // git needs PATH, HOME and the like, never credentials
+		name, _, _ := strings.Cut(kv, "=")
+		upper := strings.ToUpper(name)
+		if !strings.HasPrefix(upper, "GIT_") && !strings.Contains(upper, "KEY") && !strings.Contains(upper, "TOKEN") &&
+			!strings.Contains(upper, "SECRET") && !strings.Contains(upper, "PASS") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
 	var out, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
 	if err := cmd.Run(); err != nil {
@@ -137,14 +157,15 @@ func (h *Home) Revert(hash string) error {
 		return errors.New("invalid change id")
 	}
 	h.Snapshot("Before revert")
+	before, _ := os.ReadFile(h.Path(InstructionsFile))
 	if _, err := h.git("revert", "--no-edit", hash); err != nil {
 		h.git("revert", "--abort")
 		return fmt.Errorf("cannot revert cleanly, later changes touch the same lines: %w", err)
 	}
 	// The user asked for this, so what it did to their instructions stands.
-	if b, err := os.ReadFile(h.Path(InstructionsFile)); err == nil {
+	if after, err := os.ReadFile(h.Path(InstructionsFile)); err == nil && !bytes.Equal(before, after) {
 		h.mu.Lock()
-		h.guard[InstructionsFile] = b
+		h.guard[InstructionsFile] = after
 		h.mu.Unlock()
 	}
 	return nil

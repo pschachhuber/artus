@@ -111,12 +111,13 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
-	updates, stopUpdates := context.WithCancel(context.Background())
-	defer stopUpdates()
-	go a.updates.Run(updates)
+	background, stop := context.WithCancel(context.Background())
+	a.cancel = stop
+	go a.sched.Run(background) // only a serving Artus fires triggers; one-shot runs leave them alone
+	go a.updates.Run(background)
 	if updatedFrom != "" {
 		fmt.Printf("Updated from %s.\n", updatedFrom)
-		go a.updates.Check(updates) // so the interface shows a current check, not "never"
+		go a.updates.Check(background) // so the interface shows a current check, not "never"
 	}
 	fmt.Printf("Artus %s\n  home  %s\n  open  %s\n", version, a.home.Dir, url)
 	if a.home.Config().Model == "" {
@@ -218,16 +219,20 @@ func runOnce(args []string) error {
 }
 
 func printURL() error {
-	home, err := store.Open(store.DefaultDir(), nil)
+	if os.Getenv("ARTUS_AGENT_TOKEN") != "" {
+		return errors.New("the sign-in link is for the user; ask them to open Artus")
+	}
+	dir := store.DefaultDir()
+	if url, ok := liveServer(dir); ok {
+		fmt.Println(url)
+		return nil
+	}
+	home, err := store.Open(dir, nil) // nothing is running: set up the home if needed
 	if err != nil {
 		return err
 	}
 	cfg := home.Config().Server
-	base := fmt.Sprintf("http://%s", net.JoinHostPort(displayHost(cfg.Host), fmt.Sprint(cfg.Port)))
-	if url, ok := liveServer(home.Dir); ok {
-		base = url[:strings.Index(url, "/?")]
-	}
-	fmt.Printf("%s/?token=%s\n", base, cfg.Token)
+	fmt.Printf("http://%s/?token=%s\n", net.JoinHostPort(displayHost(cfg.Host), fmt.Sprint(cfg.Port)), cfg.Token)
 	return nil
 }
 

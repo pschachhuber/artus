@@ -22,7 +22,8 @@ var agentTool = &Tool{
 		Description: "Hand a self-contained piece of work to a sub-agent with a fresh context and the same tools, and get back its final report. " +
 			"Use it to keep bulky reading or searching out of your own context, and call it several times in one turn to work in parallel. " +
 			"The sub-agent knows nothing of this conversation: give it the goal, what you already know, the files or URLs to look at, and what to report back. " +
-			"Optionally pick a model from the allowlist, such as a cheaper one for simple lookups.",
+			"Optionally pick a model from the allowlist, such as a cheaper one for simple lookups. " +
+			"Sub-agents cannot schedule wake-ups for this conversation, and at the nesting limit they have no agent tool of their own.",
 		Schema: schema(`{"type":"object","properties":{
 			"prompt":{"type":"string","description":"The complete assignment."},
 			"name":{"type":"string","description":"A short label shown to the user."},
@@ -75,6 +76,16 @@ func contains(list []string, v string) bool {
 // spawn runs a sub-agent to completion in a child chat and returns its final message.
 func (e *Engine) spawn(ctx context.Context, parent *run, parentMeta store.ChatMeta, name, prompt, model, effort string) (string, string, error) {
 	limit := max(e.Home.Config().Limits.Subagents, 1)
+	if parentMeta.Kind == store.KindAgent { // the parent only waits for this child: lend it the parent's slot
+		e.mu.Lock()
+		e.active--
+		e.mu.Unlock()
+		defer func() {
+			e.mu.Lock()
+			e.active++
+			e.mu.Unlock()
+		}()
+	}
 	e.mu.Lock()
 	for e.active >= limit {
 		e.mu.Unlock()
@@ -122,12 +133,13 @@ func (e *Engine) spawn(ctx context.Context, parent *run, parentMeta store.ChatMe
 }
 
 var scheduleTool = &Tool{
+	Risky: true, // a task it starts runs unattended, so in confirm mode the user approves it here
 	Def: llm.Tool{
 		Name: "schedule",
 		Description: "Make something happen later or repeatedly. Without a target, the trigger wakes this conversation and hands you your note: use that for reminders and follow-ups. " +
 			"With target \"task:<id>\" it starts an unattended run of that task (tasks/<id>/TASK.md must exist) in a fresh context. " +
 			"when is one of: \"cron 0 7 * * 1-5\" (minute hour day month weekday, local time), \"every 2h\", \"in 30m\", \"at 2026-12-01T09:00\", \"now\". " +
-			"Units: m, h, d, w. Use list to see triggers and cancel with the id it shows.",
+			"Units: m, h, d, w. list without a target shows every trigger; cancel takes the id it shows.",
 		Schema: schema(`{"type":"object","properties":{
 			"action":{"type":"string","enum":["set","list","cancel"]},
 			"when":{"type":"string","description":"For set."},
@@ -214,7 +226,7 @@ var secretTool = &Tool{
 		if err := c.args(&in); err != nil {
 			return fail("%v", err)
 		}
-		if c.e.Secrets.Has(in.Name) {
+		if c.e.Secrets.Stored(in.Name) {
 			return Result{Text: in.Name + " is already stored. Use it by name."}
 		}
 		if c.Chat.Kind == store.KindTask || c.e.rootKind(c.r) == store.KindTask {
@@ -262,6 +274,7 @@ func externalTool(ext store.ExternalTool) *Tool {
 			defer cancel()
 			cmd := exec.Command(ext.Command[0], ext.Command[1:]...)
 			cmd.Dir, cmd.Env, cmd.Stdin = ext.Dir, env, bytes.NewReader(c.Input)
+			cmd.WaitDelay = 2 * time.Second // processes it leaves behind may not hold the call open
 			detach(cmd)
 			var out bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &out, &out

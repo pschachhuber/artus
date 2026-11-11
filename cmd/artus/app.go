@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -43,9 +45,6 @@ type app struct {
 const stateFile = "server.json" // where a running Artus records its address
 
 func newApp(dir string) (*app, error) {
-	_, statErr := os.Stat(dir + string(os.PathSeparator) + store.ScheduleFile)
-	firstRun := errors.Is(statErr, os.ErrNotExist)
-
 	home, err := store.Open(dir, defaults.Home())
 	if err != nil {
 		return nil, err
@@ -92,8 +91,12 @@ func newApp(dir string) (*app, error) {
 		return nil, err
 	}
 	a.engine.Sched = a.sched
-	if firstRun {
-		a.sched.Add("task:maintenance", "cron 0 4 1 * *", "Monthly maintenance")
+	a.sched.OnError = func(err error) { a.server.Publish("alert", "The schedule could not be saved: "+err.Error()) }
+	// The monthly maintenance trigger is set up once; if the user cancels it, it stays cancelled.
+	if marker := home.Path("tasks", "maintenance", ".scheduled"); !exists(marker) {
+		if _, err := a.sched.Add("task:maintenance", "cron 0 4 1 * *", "Monthly maintenance"); err == nil {
+			os.WriteFile(marker, nil, 0o600)
+		}
 	}
 
 	a.browser = browser.NewManager(browser.Options{
@@ -184,10 +187,6 @@ func (a *app) listen(port int) (string, error) {
 	a.http = &http.Server{Handler: a.server.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go a.http.Serve(ln)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	a.cancel = cancel
-	go a.sched.Run(ctx)
-
 	url := base + "/?token=" + cfg.Token
 	state, _ := json.Marshal(map[string]any{"url": base, "pid": os.Getpid()})
 	os.WriteFile(a.home.Path(stateFile), state, 0o600)
@@ -264,25 +263,53 @@ func (c client) call(method, path string, in, out any) error {
 }
 
 // liveServer reports the sign-in link of an Artus already serving this home.
+// The address in server.json must be on this machine and the server there
+// must prove it holds this home's token, which it is never sent.
 func liveServer(dir string) (string, bool) {
-	b, err := os.ReadFile(dir + string(os.PathSeparator) + stateFile)
+	b, err := os.ReadFile(filepath.Join(dir, stateFile))
 	if err != nil {
 		return "", false
 	}
 	var state struct{ URL string }
-	if json.Unmarshal(b, &state) != nil || state.URL == "" {
+	if json.Unmarshal(b, &state) != nil {
 		return "", false
 	}
-	resp, err := (&http.Client{Timeout: 2 * time.Second}).Get(state.URL + "/api/state")
+	u, err := url.Parse(state.URL)
+	if err != nil || u.Scheme != "http" || u.Path != "" || !loopback(u.Hostname()) {
+		return "", false
+	}
+	token := savedToken(dir)
+	nonce := store.RandomID(16)
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Get(state.URL + "/api/hello?nonce=" + nonce)
 	if err != nil {
 		return "", false // stale file from a crash
 	}
-	resp.Body.Close()
-	home, err := store.Open(dir, nil)
-	if err != nil {
-		return "", false
+	defer resp.Body.Close()
+	var hello struct{ Proof string }
+	if json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&hello) != nil || token == "" ||
+		!hmac.Equal([]byte(hello.Proof), []byte(server.Proof(token, nonce))) {
+		return "", false // some other program now has that port
 	}
-	return state.URL + "/?token=" + home.Config().Server.Token, true
+	return state.URL + "/?token=" + token, true
+}
+
+func loopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// savedToken reads the access token from config.json without opening the
+// home, which would start its own bookkeeping next to a running Artus.
+func savedToken(dir string) string {
+	var cfg store.Config
+	b, _ := os.ReadFile(filepath.Join(dir, store.ConfigFile))
+	if json.Unmarshal(b, &cfg) != nil {
+		return ""
+	}
+	return cfg.Server.Token
 }
 
 // connect returns a client for the running Artus. Commands started by the
@@ -324,4 +351,9 @@ func (a *app) listenAny() (string, error) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 	return a.listen(port)
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

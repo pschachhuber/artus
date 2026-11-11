@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/pschachhuber/artus/internal/agent"
 	"github.com/pschachhuber/artus/internal/store"
@@ -226,7 +227,8 @@ func (s *Server) forkChat(w http.ResponseWriter, r *http.Request) {
 // records at them, so that deleting either chat leaves the other whole.
 func (s *Server) carryUploads(src, dst string, recs []json.RawMessage) []json.RawMessage {
 	from, to := s.Home.Path("uploads", src), s.Home.Path("uploads", dst)
-	oldRef, newRef := inJSON(from+string(filepath.Separator)), inJSON(to+string(filepath.Separator))
+	oldRef := append([]byte(`"path":"`), inJSON(from+string(filepath.Separator))...)
+	newRef := append([]byte(`"path":"`), inJSON(to+string(filepath.Separator))...)
 	out, used := make([]json.RawMessage, len(recs)), false
 	for i, rec := range recs {
 		out[i] = bytes.ReplaceAll(rec, oldRef, newRef)
@@ -351,8 +353,9 @@ func safeName(name string) string {
 	if name == "" {
 		name = "file"
 	}
-	if len(name) > 120 {
-		name = name[len(name)-120:]
+	for len(name) > 120 { // keep the end, where the extension is, and whole characters
+		_, size := utf8.DecodeRuneInString(name)
+		name = name[size:]
 	}
 	return name
 }

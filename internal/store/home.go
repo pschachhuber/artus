@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Home is an opened data directory (default ~/.artus).
@@ -25,6 +26,9 @@ type Home struct {
 	cfg    Config
 	guard  map[string][]byte // locked files as the harness last wrote them
 	hasGit bool              // whether the change history is available
+
+	chatMu sync.Mutex
+	chats  map[string]*chatGuard // chats this process wrote, by id
 }
 
 // Locked files and directories, relative to the home. The agent may not write
@@ -59,7 +63,7 @@ func Open(dir string, seed fs.FS) (*Home, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &Home{Dir: abs, guard: map[string][]byte{}}
+	h := &Home{Dir: abs, guard: map[string][]byte{}, chats: map[string]*chatGuard{}}
 	for _, d := range []string{"", "topics", "skills", "tools", "tasks", "chats", "uploads", "tmp", "browser"} {
 		if err := os.MkdirAll(filepath.Join(abs, d), 0o700); err != nil {
 			return nil, err
@@ -224,9 +228,9 @@ func (h *Home) writeLocked(rel string, data []byte) error {
 
 // Restore puts back any locked file that was changed behind the harness's
 // back (for example by a shell command) and returns the names it restored.
+// Chat transcripts and metadata this process wrote are checked too.
 func (h *Home) Restore() []string {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	var restored []string
 	for rel, want := range h.guard {
 		got, err := os.ReadFile(h.Path(rel))
@@ -237,7 +241,8 @@ func (h *Home) Restore() []string {
 			restored = append(restored, rel)
 		}
 	}
-	return restored
+	h.mu.Unlock()
+	return append(restored, h.restoreChats()...)
 }
 
 func writeAtomic(path string, data []byte, mode fs.FileMode) error {
@@ -259,7 +264,14 @@ func writeAtomic(path string, data []byte, mode fs.FileMode) error {
 	if err := os.Chmod(tmp.Name(), mode); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	err = os.Rename(tmp.Name(), path)
+	// On Windows the target cannot be replaced while someone has it open;
+	// readers here hold files only briefly.
+	for try := 0; err != nil && runtime.GOOS == "windows" && try < 20; try++ {
+		time.Sleep(25 * time.Millisecond)
+		err = os.Rename(tmp.Name(), path)
+	}
+	return err
 }
 
 // Config is the user-owned configuration in config.json.

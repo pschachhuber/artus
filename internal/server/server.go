@@ -4,7 +4,10 @@
 package server
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -103,6 +106,7 @@ func (s *Server) guard(next http.Handler) http.Handler {
 		user := same(bearer, cfg.Token) || (cookie != nil && same(cookie.Value, cfg.Token))
 		switch {
 		case user:
+		case r.URL.Path == "/api/hello" && r.Method == http.MethodGet: // proves who this is without a token
 		case strings.HasPrefix(r.URL.Path, "/api/agent/") && same(bearer, s.AgentToken):
 		case strings.HasPrefix(r.URL.Path, "/api/"):
 			http.Error(w, "not signed in", http.StatusUnauthorized)
@@ -152,6 +156,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("GET /", http.FileServerFS(s.UI))
 	mux.HandleFunc("GET /api/events", s.hub.serve)
 	mux.HandleFunc("GET /api/state", s.getState)
+	mux.HandleFunc("GET /api/hello", s.hello)
 
 	mux.HandleFunc("GET /api/chats", s.listChats)
 	mux.HandleFunc("POST /api/chats", s.createChat)
@@ -263,4 +268,23 @@ func list[T any](s []T) []T {
 		return []T{}
 	}
 	return s
+}
+
+// hello answers a challenge with an HMAC of it under the access token. The
+// command line uses it to tell this Artus from another program that took
+// its port after a crash, without sending that program the token.
+func (s *Server) hello(w http.ResponseWriter, r *http.Request) {
+	nonce := r.URL.Query().Get("nonce")
+	if len(nonce) < 16 || len(nonce) > 128 {
+		bad(w, "nonce required")
+		return
+	}
+	reply(w, map[string]string{"proof": Proof(s.Home.Config().Server.Token, nonce)})
+}
+
+// Proof is the answer to a hello challenge.
+func Proof(token, nonce string) string {
+	mac := hmac.New(sha256.New, []byte(token))
+	mac.Write([]byte("artus-hello:" + nonce))
+	return hex.EncodeToString(mac.Sum(nil))
 }

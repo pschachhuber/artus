@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,7 +19,7 @@ var readTool = &Tool{
 	Def: llm.Tool{
 		Name: "read",
 		Description: "Read a file. Text comes back with line numbers; images and PDFs are shown to you directly; a directory lists its entries. " +
-			"Relative paths start in your home. Large files: read a window with offset and limit, or grep first.",
+			"Relative paths start in the working directory (your home, unless a bash cd moved it). Large files: read a window with offset and limit, or grep first.",
 		Schema: schema(`{"type":"object","properties":{
 			"path":{"type":"string"},
 			"offset":{"type":"integer","description":"First line to return (1-based)."},
@@ -57,13 +58,16 @@ func runRead(_ context.Context, c *Call) Result {
 		if st.Size() > 20<<20 {
 			return fail("%s is too large to show (%d MB).", c.e.display(path), st.Size()>>20)
 		}
+		if ok, why := attachable(path, mt); !ok {
+			return fail("%s cannot be shown to you: %s. Inspect it with bash instead.", c.e.display(path), why)
+		}
 		kind := llm.Image
 		if mt == "application/pdf" {
 			kind = llm.File
 		}
 		return Result{
 			Text:   fmt.Sprintf("%s (%s, %d bytes) is attached below.", c.e.display(path), mt, st.Size()),
-			Blocks: []llm.Block{{Type: kind, Path: path, MediaType: mt, Name: filepath.Base(path)}},
+			Blocks: []llm.Block{{Type: kind, Path: c.e.freeze(c.Chat.ID, path), MediaType: mt, Name: filepath.Base(path)}},
 		}
 	}
 	if st.Size() > 50<<20 {
@@ -159,8 +163,19 @@ var writeTool = &Tool{
 		if statErr == nil {
 			verb = "Replaced"
 		}
+		note := ""
+		if rel, ok := c.e.Home.Rel(path); ok && strings.HasPrefix(rel, "tools/") && strings.HasSuffix(rel, "/tool.json") {
+			var t store.ExternalTool
+			err := json.Unmarshal([]byte(in.Content), &t)
+			if err == nil {
+				err = store.CheckTool(t)
+			}
+			if err != nil {
+				note = " This tool will not be offered until it is fixed: " + err.Error() + "."
+			}
+		}
 		return Result{
-			Text: fmt.Sprintf("%s %s (%d lines).", verb, c.e.display(path), strings.Count(in.Content, "\n")+1),
+			Text: fmt.Sprintf("%s %s (%d lines).%s", verb, c.e.display(path), strings.Count(in.Content, "\n")+1, note),
 			UI:   map[string]any{"path": c.e.display(path), "new": preview(in.Content)},
 		}
 	},

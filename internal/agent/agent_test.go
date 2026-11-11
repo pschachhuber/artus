@@ -222,7 +222,7 @@ func TestLockedFilesAndGuard(t *testing.T) {
 	}
 	warned := false
 	for _, rec := range f.e.Records(id) {
-		if rec.Msg != nil && strings.Contains(rec.Msg.TextOf(), "has been restored") {
+		if rec.Msg != nil && strings.Contains(rec.Msg.TextOf(), "the change has been undone") {
 			warned = true
 		}
 	}

@@ -5,6 +5,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -312,14 +315,16 @@ func TestUploadsForkAndFiles(t *testing.T) {
 	f := newFixture(t)
 	var chat store.ChatMeta
 	f.call("POST", "/api/chats", map[string]string{}, &chat)
-	png := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 64)...)
+	var img bytes.Buffer
+	png.Encode(&img, image.NewGray(image.Rect(0, 0, 2, 2)))
+	pic := img.Bytes()
 	var att agent.Attachment
-	f.call("POST", "/api/chats/"+chat.ID+"/uploads?name=..%2F..%2Fmy+photo.png", png, &att)
+	f.call("POST", "/api/chats/"+chat.ID+"/uploads?name=..%2F..%2Fmy+photo.png", pic, &att)
 	if att.Name != "my_photo.png" || att.Type != "image/png" || !strings.Contains(att.Path, "uploads") {
 		t.Fatalf("upload: %+v", att)
 	}
 	var again agent.Attachment
-	f.call("POST", "/api/chats/"+chat.ID+"/uploads?name=my+photo.png", png, &again)
+	f.call("POST", "/api/chats/"+chat.ID+"/uploads?name=my+photo.png", pic, &again)
 	if again.Name != "my_photo-2.png" {
 		t.Errorf("a second upload must not overwrite the first: %q", again.Name)
 	}
@@ -330,7 +335,7 @@ func TestUploadsForkAndFiles(t *testing.T) {
 	f.idle(chat.ID)
 	reqs := f.mock.Requests()
 	blocks := reqs[len(reqs)-1].Messages[0].Blocks
-	if len(blocks) != 3 || blocks[1].Type != llm.Image || !strings.Contains(blocks[2].Text, "uploads/"+chat.ID+"/my_photo.png (image/png, 72 bytes)") {
+	if len(blocks) != 3 || blocks[1].Type != llm.Image || !strings.Contains(blocks[2].Text, fmt.Sprintf("uploads/%s/my_photo.png (image/png, %d bytes)", chat.ID, len(pic))) {
 		t.Fatalf("message blocks: %+v", blocks)
 	}
 

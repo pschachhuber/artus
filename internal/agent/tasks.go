@@ -19,6 +19,13 @@ func (e *Engine) Fire(t sched.Trigger) {
 	}
 	switch kind {
 	case "task":
+		if task, err := e.Home.Task(id); err == nil && task.Status != "active" {
+			if task.Status == "done" { // finished for good: its triggers go too
+				e.Sched.RemoveTarget(t.Target)
+				e.emit("", "schedule", nil)
+			}
+			return // a paused task skips its runs quietly
+		}
 		if _, err := e.RunTask(id, reason); err != nil {
 			e.emit("", "alert", fmt.Sprintf("Task %s did not start: %v", id, err))
 		}
@@ -68,7 +75,7 @@ func (e *Engine) RunTask(taskID, reason string) (string, error) {
 		notes = "(empty: this is the first run. If the task should repeat, set its triggers with the schedule tool now.)"
 	}
 	text := fmt.Sprintf("<harness>%s</harness>\n\n# tasks/%s/TASK.md\n%s\n\n# tasks/%s/NOTES.md\n%s",
-		reason, taskID, task.Description, taskID, notes)
+		defuse(reason), taskID, defuse(e.Secrets.Redact(task.Description)), taskID, defuse(e.Secrets.Redact(notes)))
 	if err := e.Send(meta.ID, Input{Text: text, Synthetic: true}); err != nil {
 		return "", err
 	}

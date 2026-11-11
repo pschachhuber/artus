@@ -2,8 +2,10 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -194,11 +196,36 @@ func (h *Home) ExternalTools() []ExternalTool {
 			continue
 		}
 		var t ExternalTool
-		if json.Unmarshal(b, &t) != nil || !ValidID(t.Name) || len(t.Command) == 0 {
+		if json.Unmarshal(b, &t) != nil || CheckTool(t) != nil {
 			continue
 		}
 		t.Dir = h.Path("tools", d.Name())
 		out = append(out, t)
 	}
 	return out
+}
+
+var toolName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// CheckTool says what is wrong with a tool manifest, if anything. A tool a
+// provider rejects would make every new conversation fail, so such a tool is
+// not offered at all.
+func CheckTool(t ExternalTool) error {
+	switch {
+	case !toolName.MatchString(t.Name):
+		return errors.New("name must be 1-64 letters, digits, _ or -")
+	case strings.TrimSpace(t.Description) == "":
+		return errors.New("description is missing")
+	case len(t.Command) == 0:
+		return errors.New("command is missing (an argv list, run in the tool's folder)")
+	}
+	if len(t.Parameters) > 0 {
+		var schema struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(t.Parameters, &schema) != nil || schema.Type != "object" {
+			return errors.New(`parameters must be a JSON Schema object: {"type":"object","properties":{…}}`)
+		}
+	}
+	return nil
 }

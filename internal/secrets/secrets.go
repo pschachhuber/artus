@@ -48,7 +48,10 @@ type Store struct {
 	lines    []string          // file content, comments and order preserved
 	values   map[string]string // name -> raw value (literal or reference)
 	resolved map[string]cached // reference -> value fetched from Proton Pass
+	hidden   map[string]string // values of the harness's own to redact, by name
 	replacer *strings.Replacer
+	short    *regexp.Regexp    // values too short to replace inside words
+	shortOf  map[string]string // short value -> name
 	loggedIn time.Time
 
 	// Exec runs pass-cli; tests replace it.
@@ -144,6 +147,25 @@ func (s *Store) Names() []Info {
 	return out
 }
 
+// Hide makes Redact replace value with [secret:name], for credentials of the
+// harness that are not stored here, such as its own access token.
+func (s *Store) Hide(name, value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hidden == nil {
+		s.hidden = map[string]string{}
+	}
+	s.hidden[name], s.replacer = value, nil
+}
+
+// Stored reports whether name is in the secrets file itself.
+func (s *Store) Stored(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.values[name]
+	return ok
+}
+
 // Has reports whether name is registered (in the file or the process environment).
 func (s *Store) Has(name string) bool {
 	s.mu.Lock()
@@ -194,7 +216,7 @@ func (s *Store) Add(name, value string) error {
 	if isReserved(name) {
 		return fmt.Errorf("%s is reserved for the harness", name)
 	}
-	if s.Has(name) {
+	if s.Stored(name) {
 		return fmt.Errorf("secret %s already exists; only the user can replace it", name)
 	}
 	if value == "" {
@@ -203,11 +225,15 @@ func (s *Store) Add(name, value string) error {
 	return s.Set(name, value)
 }
 
+// quote writes a value so that parseLine reads it back unchanged.
 func quote(value string) string {
-	if strings.ContainsAny(value, " #'\"") && !strings.Contains(value, `"`) {
+	if !strings.ContainsAny(value, " #'\"") {
+		return value
+	}
+	if !strings.Contains(value, `"`) {
 		return `"` + value + `"`
 	}
-	return value
+	return "'" + value + "'" // parseLine strips only the outermost matching pair
 }
 
 // Get returns the value of a secret, resolving a Proton Pass reference if
@@ -353,16 +379,41 @@ func (s *Store) Redact(text string) string {
 	if s.replacer == nil {
 		s.replacer = s.buildReplacer()
 	}
-	r := s.replacer
+	r, short, shortOf := s.replacer, s.short, s.shortOf
 	s.mu.Unlock()
-	return r.Replace(text)
+	text = r.Replace(text)
+	// A short value (a PIN) is replaced only where it stands alone, not inside
+	// other numbers or words. Matches share their boundary characters, so
+	// adjacent ones need another pass.
+	for pass := 0; short != nil && pass < 4; pass++ {
+		found := short.FindAllStringSubmatchIndex(text, -1)
+		if len(found) == 0 {
+			break
+		}
+		var b strings.Builder
+		last := 0
+		for _, m := range found {
+			b.WriteString(text[last:m[4]])
+			b.WriteString("[secret:" + shortOf[text[m[4]:m[5]]] + "]")
+			last = m[5]
+		}
+		text = b.String() + text[last:]
+	}
+	return text
 }
 
 func (s *Store) buildReplacer() *strings.Replacer {
 	type pair struct{ value, name string }
 	var pairs []pair
+	s.short, s.shortOf = nil, map[string]string{}
+	var shorts []string
 	add := func(name, value string) {
-		if len(value) < 6 { // too short to be a secret worth mangling output for
+		if len(value) < 4 {
+			return
+		}
+		if len(value) < 8 { // short values (PINs) only where they stand alone
+			s.shortOf[value] = name
+			shorts = append(shorts, regexp.QuoteMeta(value))
 			return
 		}
 		pairs = append(pairs, pair{value, name})
@@ -385,6 +436,12 @@ func (s *Store) buildReplacer() *strings.Replacer {
 			add(name, os.Getenv(name))
 		}
 	}
+	for name, value := range s.hidden {
+		add(name, value)
+	}
+	if len(shorts) > 0 {
+		s.short = regexp.MustCompile(`(^|[^A-Za-z0-9_])(` + strings.Join(shorts, "|") + `)($|[^A-Za-z0-9_])`)
+	}
 	sort.Slice(pairs, func(i, j int) bool { return len(pairs[i].value) > len(pairs[j].value) })
 	args := make([]string, 0, len(pairs)*2)
 	for _, p := range pairs {
@@ -400,11 +457,19 @@ func (s *Store) Masked() string {
 	defer s.mu.Unlock()
 	var b strings.Builder
 	for _, line := range s.lines {
-		if name, value, ok := parseLine(line); ok {
+		trimmed := strings.TrimSpace(line)
+		name, value, ok := parseLine(line)
+		switch {
+		case ok:
 			if !strings.HasPrefix(value, refPrefix) {
 				value = "********"
 			}
 			line = name + "=" + value
+		case trimmed == "":
+		case strings.HasPrefix(trimmed, "#") && !strings.Contains(trimmed, "="):
+			line = trimmed // a comment
+		default:
+			line = "# (a line Artus does not read; not shown)"
 		}
 		b.WriteString(line + "\n")
 	}

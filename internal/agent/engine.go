@@ -34,6 +34,7 @@ type Engine struct {
 	mu      sync.Mutex
 	runs    map[string]*run
 	asks    map[string]chan string     // pending approvals and secret requests
+	asking  map[string]chan struct{}   // per conversation: held by the question on screen
 	cwds    map[string]string          // working directory per chat
 	allowed map[string]map[string]bool // per chat: tools approved "always" in confirm mode
 	active  int                        // sub-agents running now
@@ -50,12 +51,15 @@ type Event struct {
 
 // Record is one line of a chat transcript.
 type Record struct {
-	T    string    `json:"t"` // system | msg | compact | note
+	T    string    `json:"t"` // system | msg | compact | cut | note
 	Time time.Time `json:"time"`
 	// system: starts a context segment. The prompt and tool set stay frozen
 	// until the next one so the provider's cache and signed reasoning hold.
 	System string     `json:"system,omitempty"`
 	Tools  []llm.Tool `json:"tools,omitempty"`
+	Search *bool      `json:"search,omitempty"` // whether the provider's web search is on
+	// cut: the last Drop messages of the segment are void (a stopped compaction).
+	Drop int `json:"drop,omitempty"`
 	// msg
 	Msg   *llm.Message `json:"msg,omitempty"`
 	Usage *llm.Usage   `json:"usage,omitempty"`
@@ -132,11 +136,12 @@ type run struct {
 
 // New returns an engine. Emit and the server fields are filled in by the caller.
 func New(home *store.Home, sec *secrets.Store, reg *llm.Registry, prompt string) *Engine {
+	sec.Hide("ARTUS_TOKEN", home.Config().Server.Token) // the model never reads it, wherever it turns up
 	return &Engine{
 		Home: home, Secrets: sec, LLM: reg, Prompt: prompt,
 		Emit: func(Event) {},
 		runs: map[string]*run{},
-		asks: map[string]chan string{},
+		asks: map[string]chan string{}, asking: map[string]chan struct{}{},
 		cwds: map[string]string{}, allowed: map[string]map[string]bool{},
 	}
 }
@@ -300,6 +305,21 @@ func (e *Engine) note(chatID, level, text string) {
 // ask blocks the run on a question for the user and returns the answer, or
 // "" if the run was stopped first.
 func (e *Engine) ask(ctx context.Context, r *run, a Ask) string {
+	// One question at a time per conversation: parallel sub-agents take turns.
+	e.mu.Lock()
+	turn := e.asking[r.root]
+	if turn == nil {
+		turn = make(chan struct{}, 1)
+		e.asking[r.root] = turn
+	}
+	e.mu.Unlock()
+	select {
+	case turn <- struct{}{}:
+		defer func() { <-turn }()
+	case <-ctx.Done():
+		return ""
+	}
+
 	a.ID = store.RandomID(6)
 	ch := make(chan string, 1)
 	e.mu.Lock()

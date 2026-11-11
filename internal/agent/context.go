@@ -72,24 +72,24 @@ func (e *Engine) systemPrompt(meta store.ChatMeta) string {
 	}
 	if e.Home.Config().Secrets.Backend == "protonpass" {
 		b.WriteString("\nProton Pass is connected: a secret may be a reference, pass://Vault/Item/field (field: username, password, totp, …), fetched when used. " +
-			"`pass-cli item list` shows what the vault holds; register an item with `echo 'pass://Vault/Item/password' | artus secret add NAME`.")
+			"To use an item that has no name here yet, ask the user for its reference and register it with `echo 'pass://Vault/Item/password' | artus secret add NAME`.")
 	}
 
 	switch meta.Kind {
 	case store.KindTask:
 		fmt.Fprintf(&b, headRun+"You are running unattended as task %q (tasks/%s/). Nobody is watching: do not ask questions, decide and act. "+
 			"Before you finish, update tasks/%s/NOTES.md with what the next run needs to know, and end with a short report of what you did and found. "+
-			"Set status: done in TASK.md when the job is complete for good.", meta.Task, meta.Task, meta.Task)
+			"Set status: done in TASK.md when the job is complete for good; its triggers are then removed.", meta.Task, meta.Task, meta.Task)
 	case store.KindAgent:
 		b.WriteString(headRun + "You are a sub-agent working on one assignment for another agent. Do exactly that assignment. " +
 			"Your final message is the only thing it receives, so make it complete and self-contained: findings, file paths, and anything you could not do.")
 	}
-	return strings.TrimSpace(b.String())
+	return e.Secrets.Redact(strings.TrimSpace(b.String()))
 }
 
 func (e *Engine) readHome(rel string) string {
 	b, _ := os.ReadFile(e.Home.Path(rel))
-	return strings.TrimSpace(string(b))
+	return defuse(e.Secrets.Redact(strings.TrimSpace(string(b))))
 }
 
 // threshold is the context size at which the chat is compacted.
@@ -157,13 +157,16 @@ func (e *Engine) compact(ctx context.Context, r *run, s *session, midTask bool) 
 	if !midTask {
 		next = "Anything left open or promised for later."
 	}
+	start := len(s.messages)
 	e.append(s, llm.Message{Role: "user", Synthetic: true, Blocks: []llm.Block{{Type: llm.Text, Text: fmt.Sprintf(compactPrompt, next)}}}, nil)
 
 	summary := ""
 	for round := 0; round < 8 && summary == ""; round++ {
 		resp, err := e.request(ctx, r, s)
 		if err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil { // stopped: the compaction request and its replies are void
+				e.record(s.meta.ID, Record{T: "cut", Drop: len(s.messages) - start})
+				s.messages = s.messages[:start]
 				return ctx.Err()
 			}
 			summary = digest(s) // the model could not be reached or the context no longer fits
@@ -173,7 +176,11 @@ func (e *Engine) compact(ctx context.Context, r *run, s *session, midTask bool) 
 		e.append(s, resp.Message, &resp.Usage)
 		e.account(r, s, resp.Usage)
 		if calls := resp.Message.Calls(); len(calls) > 0 {
-			e.append(s, llm.Message{Role: "user", Blocks: e.runTools(ctx, r, s, calls)}, nil)
+			results := e.runTools(ctx, r, s, calls)
+			if warn := e.restored(s.meta.ID); warn != "" {
+				results = append(results, llm.Block{Type: llm.Text, Text: "<harness>" + warn + "</harness>"})
+			}
+			e.append(s, llm.Message{Role: "user", Blocks: results}, nil)
 			continue
 		}
 		summary = strings.TrimSpace(resp.Message.TextOf())
@@ -184,8 +191,8 @@ func (e *Engine) compact(ctx context.Context, r *run, s *session, midTask bool) 
 
 	e.record(s.meta.ID, Record{T: "compact", Summary: summary, Tokens: before})
 	e.begin(s)
-	text := "<summary>\n" + summary + "\n</summary>\n\n<harness>The conversation so far was compacted into the summary above. " +
-		"The full transcript is in chats/" + s.meta.ID + ".jsonl; grep it if you need an exact detail."
+	text := "<summary>\n" + defuse(summary) + "\n</summary>\n\n<harness>The conversation so far was compacted into the summary above. " +
+		"The full transcript is " + e.Home.Path("chats", s.meta.ID+".jsonl") + "; grep that file if you need an exact detail."
 	if midTask {
 		text += " Continue the work from where it stopped."
 	}

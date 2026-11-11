@@ -17,10 +17,11 @@ import (
 // session is the live context of one chat: everything since its last
 // "system" record. It only ever grows; compaction starts a new one.
 type session struct {
-	meta     store.ChatMeta
-	system   string
-	tools    []llm.Tool
-	messages []llm.Message
+	meta      store.ChatMeta
+	system    string
+	tools     []llm.Tool
+	webSearch bool // fixed with the tools, so that changing the setting does not rewrite this segment's prefix
+	messages  []llm.Message
 }
 
 // load rebuilds the session from the transcript.
@@ -30,10 +31,16 @@ func (e *Engine) load(meta store.ChatMeta) *session {
 		switch rec.T {
 		case "system":
 			s.system, s.tools, s.messages = rec.System, rec.Tools, nil
+			s.webSearch = e.Home.Config().WebSearch
+			if rec.Search != nil {
+				s.webSearch = *rec.Search
+			}
 		case "msg":
 			if rec.Msg != nil {
 				s.messages = append(s.messages, *rec.Msg)
 			}
+		case "cut": // messages a stopped compaction left behind
+			s.messages = s.messages[:max(len(s.messages)-rec.Drop, 0)]
 		}
 	}
 	return s
@@ -43,8 +50,9 @@ func (e *Engine) load(meta store.ChatMeta) *session {
 func (e *Engine) begin(s *session) {
 	s.system = e.systemPrompt(s.meta)
 	s.tools = e.toolDefs(s.meta)
+	s.webSearch = e.Home.Config().WebSearch
 	s.messages = nil
-	e.record(s.meta.ID, Record{T: "system", System: s.system, Tools: s.tools})
+	e.record(s.meta.ID, Record{T: "system", System: s.system, Tools: s.tools, Search: &s.webSearch})
 }
 
 func (e *Engine) append(s *session, msg llm.Message, usage *llm.Usage) {
@@ -63,13 +71,19 @@ func userMessage(in Input, home *store.Home) llm.Message {
 		if r, ok := home.Rel(f.Path); ok {
 			rel = r
 		}
-		paths = append(paths, fmt.Sprintf("- %s (%s, %d bytes)", rel, f.Type, f.Size))
-		switch {
-		case strings.HasPrefix(f.Type, "image/"):
-			msg.Blocks = append(msg.Blocks, llm.Block{Type: llm.Image, Path: f.Path, MediaType: f.Type, Name: f.Name})
-		case f.Type == "application/pdf":
-			msg.Blocks = append(msg.Blocks, llm.Block{Type: llm.File, Path: f.Path, MediaType: f.Type, Name: f.Name})
+		line := fmt.Sprintf("- %s (%s, %d bytes)", rel, f.Type, f.Size)
+		if strings.HasPrefix(f.Type, "image/") || f.Type == "application/pdf" {
+			kind := llm.Image
+			if f.Type == "application/pdf" {
+				kind = llm.File
+			}
+			if ok, why := attachable(f.Path, f.Type); ok {
+				msg.Blocks = append(msg.Blocks, llm.Block{Type: kind, Path: f.Path, MediaType: f.Type, Name: f.Name})
+			} else {
+				line += ": not shown to you, " + why + "; inspect it with tools"
+			}
 		}
+		paths = append(paths, line)
 	}
 	text := in.Text
 	if len(paths) > 0 {
@@ -94,7 +108,17 @@ func (e *Engine) execute(ctx context.Context, r *run, meta store.ChatMeta, in In
 	if s.meta.Title == "" {
 		s.meta.Title = title(in.Text)
 	}
-	e.append(s, userMessage(in, e.Home), nil)
+	e.closeDangling(s)
+	if e.shouldCompact(s) { // make room before the new message, so it is answered, not summarised
+		if err := e.compact(ctx, r, s, false); err != nil && ctx.Err() == nil {
+			e.note(meta.ID, "error", "Compaction failed: "+err.Error())
+		}
+	}
+	msg := userMessage(in, e.Home)
+	if warn := e.restored(meta.ID); warn != "" { // changed while no run was watching
+		msg.Blocks = append(msg.Blocks, llm.Block{Type: llm.Text, Text: "<harness>" + warn + "</harness>"})
+	}
+	e.append(s, msg, nil)
 	e.saveMeta(s)
 
 	cfg := e.Home.Config()
@@ -126,6 +150,13 @@ func (e *Engine) execute(ctx context.Context, r *run, meta store.ChatMeta, in In
 			break
 		}
 		resp.Message.Model = s.meta.Model
+		if resp.Stop == llm.StopRefusal {
+			// A declined turn's partial output is discarded, not replayed: its
+			// tools never run and its unsigned reasoning would fail later requests.
+			e.account(r, s, resp.Usage)
+			e.note(meta.ID, "error", "The model declined to continue. "+resp.Detail)
+			break
+		}
 		e.append(s, resp.Message, &resp.Usage)
 		e.account(r, s, resp.Usage)
 		r.mu.Lock()
@@ -136,18 +167,14 @@ func (e *Engine) execute(ctx context.Context, r *run, meta store.ChatMeta, in In
 		switch {
 		case len(calls) > 0:
 			results := e.runTools(ctx, r, s, calls)
-			if restored := e.Home.Restore(); len(restored) > 0 {
-				warn := strings.Join(restored, ", ") + " belongs to the user and was changed outside Settings; it has been restored. Do not modify it by any means: tell the user what you wanted to change and that they can change it in Settings."
+			if warn := e.restored(meta.ID); warn != "" {
 				results = append(results, llm.Block{Type: llm.Text, Text: "<harness>" + warn + "</harness>"})
-				e.emit(meta.ID, "alert", warn)
 			}
 			if turn%checkpointEvery == 0 {
 				results = append(results, llm.Block{Type: llm.Text, Text: fmt.Sprintf(
 					"<harness>Checkpoint: %d model requests so far on this request. If the goal is not within reach, stop now and report what you found, what failed and what is still missing.</harness>", turn)})
 			}
 			e.append(s, llm.Message{Role: "user", Blocks: results}, nil)
-		case resp.Stop == llm.StopRefusal:
-			e.note(meta.ID, "error", "The model declined to continue. "+resp.Detail)
 		case resp.Stop == llm.StopLength && continued < 2:
 			continued++
 			e.append(s, llm.Message{Role: "user", Synthetic: true, Blocks: []llm.Block{{Type: llm.Text, Text: "<harness>Your reply hit the output limit. Continue exactly where it stopped.</harness>"}}}, nil)
@@ -160,16 +187,16 @@ func (e *Engine) execute(ctx context.Context, r *run, meta store.ChatMeta, in In
 		}
 
 		queued := e.drain(r)
-		for _, q := range queued {
-			e.append(s, userMessage(q, e.Home), nil)
-		}
 		if len(calls) == 0 && len(queued) == 0 {
 			break
 		}
-		if e.shouldCompact(s) {
+		if e.shouldCompact(s) { // before the queued messages, so they are answered, not summarised
 			if err := e.compact(ctx, r, s, true); err != nil && ctx.Err() == nil {
 				e.note(meta.ID, "error", "Compaction failed: "+err.Error())
 			}
+		}
+		for _, q := range queued {
+			e.append(s, userMessage(q, e.Home), nil)
 		}
 	}
 	if ctx.Err() != nil {
@@ -187,6 +214,39 @@ func (e *Engine) execute(ctx context.Context, r *run, meta store.ChatMeta, in In
 	if meta.Kind != store.KindAgent && e.Home.Snapshot(s.meta.Title) {
 		e.emit("", "changes", nil)
 	}
+}
+
+// restored undoes changes made behind the harness's back to files only it or
+// the user may change, tells the user, and returns the note for the model.
+func (e *Engine) restored(chatID string) string {
+	names := e.Home.Restore()
+	if len(names) == 0 {
+		return ""
+	}
+	warn := strings.Join(names, ", ") + " may only be changed by Artus itself or by the user in Settings, and was changed by other means; the change has been undone. " +
+		"Do not modify these files by any means: tell the user what you wanted to change and that they can do it in Settings."
+	e.emit(chatID, "alert", warn)
+	return warn
+}
+
+// closeDangling answers tool calls left without results, when Artus stopped
+// in the middle of running them (a crash, a closed terminal, a fork at that
+// point). Providers reject a conversation with unanswered calls.
+func (e *Engine) closeDangling(s *session) {
+	n := len(s.messages)
+	if n == 0 || s.messages[n-1].Role != "assistant" {
+		return
+	}
+	calls := s.messages[n-1].Calls()
+	if len(calls) == 0 {
+		return
+	}
+	var results []llm.Block
+	for _, c := range calls {
+		results = append(results, llm.Block{Type: llm.ToolResult, ID: c.ID, Name: c.Name, IsError: true,
+			Text: "Not finished: Artus stopped while this was running. Check its effects before repeating it."})
+	}
+	e.append(s, llm.Message{Role: "user", Blocks: results}, nil)
 }
 
 func title(text string) string {
@@ -215,6 +275,9 @@ func (e *Engine) saveMeta(s *session) {
 		s.meta.Pinned, s.meta.Unread = cur.Pinned, cur.Unread
 		if cur.Title != "" {
 			s.meta.Title = cur.Title
+		}
+		if cur.Model != s.meta.Model {
+			s.meta.Window = cur.Window // the next request looks up the new model's window
 		}
 		s.meta.Model, s.meta.Effort = cur.Model, cur.Effort
 	}
@@ -250,7 +313,7 @@ func (e *Engine) request(ctx context.Context, r *run, s *session) (*llm.Response
 	}
 	req := llm.Request{
 		ID: s.meta.Model, Model: model, Effort: s.meta.Effort, System: s.system, Messages: s.messages,
-		Tools: s.tools, WebSearch: e.Home.Config().WebSearch, Cache: s.meta.ID,
+		Tools: s.tools, WebSearch: s.webSearch, Cache: s.meta.ID,
 	}
 	var thinkFrom, thinkTo time.Time // when reasoning streamed, to show how long it took
 	emit := func(d llm.Delta) {
@@ -316,6 +379,10 @@ func (e *Engine) request(ctx context.Context, r *run, s *session) (*llm.Response
 	}
 }
 
+// defuse keeps text from tools from passing for the harness's own notes:
+// only Artus writes <harness>, <summary>, <time> and <attachments> tags.
+var defuse = strings.NewReplacer("<harness", "‹harness", "</harness", "‹/harness", "<summary", "‹summary", "</summary", "‹/summary").Replace
+
 // overflow recognises "the prompt does not fit" errors across providers.
 func overflow(err *llm.Error) bool {
 	if err.Status != 400 && err.Status != 413 {
@@ -353,7 +420,7 @@ func (e *Engine) runTools(ctx context.Context, r *run, s *session, calls []llm.B
 		e.setState(r, "tool", c.Name)
 		started := time.Now()
 		res := e.runTool(ctx, r, s, tools, c)
-		text := e.Secrets.Redact(res.Text)
+		text := defuse(e.Secrets.Redact(res.Text))
 		text = e.capOutput(text)
 		ui, _ := json.Marshal(map[string]any{"ms": time.Since(started).Milliseconds(), "ui": res.UI})
 		out[i] = append([]llm.Block{{Type: llm.ToolResult, ID: c.ID, Name: c.Name, Text: text, IsError: res.IsError, UI: ui}}, res.Blocks...)

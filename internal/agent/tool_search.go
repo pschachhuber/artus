@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"github.com/pschachhuber/artus/internal/llm"
+
+	"github.com/pschachhuber/artus/internal/store"
 )
 
 var globTool = &Tool{
@@ -108,7 +110,12 @@ func walk(ctx context.Context, root string, skip func(p string) bool, visit func
 // and the bookkeeping file beside each transcript.
 func (c *Call) hidden(p string) bool {
 	rel, ok := c.e.Home.Rel(p)
-	if !ok || !strings.HasPrefix(rel, "chats/") {
+	switch {
+	case !ok:
+		return false
+	case rel == store.SecretsFile, rel == "pass-session", strings.HasPrefix(rel, "pass-session/"), strings.HasPrefix(rel, ".git/"):
+		return true // secrets are used by name, never searched
+	case !strings.HasPrefix(rel, "chats/"):
 		return false
 	}
 	return strings.HasSuffix(rel, ".json") || rel == "chats/"+c.Chat.ID+".jsonl"
@@ -165,7 +172,8 @@ var grepTool = &Tool{
 	Def: llm.Tool{
 		Name: "grep",
 		Description: "Search file contents with a regular expression (RE2 syntax). Searches the working directory unless path is given; " +
-			"path may be one file. This is how you search topics, skills and past conversations: in chats/ it searches what was said and shows who said it.",
+			"path may be one file. This is how you search topics, skills and past conversations: in chats/ it searches what was said and shows who said it " +
+			"(the current conversation is skipped unless you name its file). The secrets file is never searched.",
 		Schema: schema(`{"type":"object","properties":{
 			"pattern":{"type":"string"},
 			"path":{"type":"string","description":"File or folder to search."},

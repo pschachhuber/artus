@@ -24,9 +24,9 @@ var bashTool = &Tool{
 	Def: llm.Tool{
 		Name: "bash",
 		Description: "Run a shell command and return its combined output. The working directory persists between calls (cd works). " +
-			"Secrets are injected as environment variables when the command mentions their NAME (for example $GITHUB_TOKEN); never echo them. " +
+			"A secret is injected as an environment variable when the command line itself mentions its NAME (for example $GITHUB_TOKEN; a script that reads it needs `GITHUB_TOKEN=$GITHUB_TOKEN ./script`); never echo one. " +
 			"Use this for git, package managers, scripts, `artus browser …`, and anything without a dedicated tool. " +
-			"For a long-running process such as a server, set background to get control back at once.",
+			"For a long-running process such as a server, set background to get control back at once; one started with & is cut off when the command ends.",
 		Schema: schema(`{"type":"object","properties":{
 			"command":{"type":"string","description":"The command line to run."},
 			"timeout":{"type":"integer","description":"Seconds before the command is stopped. Default 120, maximum 1800."},
@@ -82,15 +82,6 @@ func (e *Engine) commandEnv(ctx context.Context, chat store.ChatMeta, command st
 		return nil, nil, err
 	}
 	env = append(env, secretEnv...)
-	if strings.Contains(command, "pass-cli") {
-		if passEnv, err := e.Secrets.PassEnv(ctx, reason); err == nil {
-			for _, kv := range passEnv {
-				if !strings.HasPrefix(kv, secrets.PassTokenName+"=") { // the logged-in session is enough
-					env = append(env, kv)
-				}
-			}
-		}
-	}
 	env = append(env,
 		"ARTUS_HOME="+e.Home.Dir,
 		"ARTUS_URL="+e.ServerURL,
@@ -162,6 +153,10 @@ func runBash(ctx context.Context, c *Call) Result {
 	defer cancel()
 	cmd := exec.Command(sh, append(shArgs, script)...)
 	cmd.Dir, cmd.Env = dir, env
+	// A process the command starts in the background, or in a group of its
+	// own, can keep the output open long after the command is done or was
+	// stopped. Stop waiting for it shortly after the shell itself has ended.
+	cmd.WaitDelay = 2 * time.Second
 	detach(cmd)
 	pr, pw := io.Pipe()
 	cmd.Stdout, cmd.Stderr = pw, pw
@@ -215,6 +210,8 @@ func runBash(ctx context.Context, c *Call) Result {
 	case errors.Is(runErr, context.Canceled):
 		res.Text += "\n[stopped by the user]"
 		res.IsError = true
+	case errors.Is(runErr, exec.ErrWaitDelay):
+		res.Text += "\n[the command finished, but something it started still runs; its later output is not shown. Use background: true for long-running processes.]"
 	case errors.As(runErr, &exit):
 		res.Text += fmt.Sprintf("\n[exit code %d]", exit.ExitCode())
 		res.IsError = true

@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -301,6 +302,10 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 		bad(w, "autonomy must be auto or confirm")
 		return
 	}
+	if in.Server.Host != s.Home.Config().Server.Host && !loopbackHost(in.Server.Host) {
+		bad(w, "server.host can only be a local address here; to serve other machines, edit config.json while Artus is stopped")
+		return
+	}
 	if !contains([]string{update.Off, update.Notify, update.Auto}, in.Update) {
 		bad(w, "update must be off, notify or auto")
 		return
@@ -335,6 +340,14 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func clamp(v, lo, hi int) int { return min(max(v, lo), hi) }
+
+func loopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 func contains(list []string, v string) bool {
 	for _, x := range list {

@@ -188,3 +188,40 @@ func TestTOTP(t *testing.T) {
 		t.Errorf("TOTP = %q, %v", code, err)
 	}
 }
+
+func TestRedactionReviewCases(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	os.WriteFile(path, []byte("BANK_PIN=48213\nQUOTED='\"wrapped\"'\n# OLD_KEY=sk-commented-out-value\nbad-name=hunter2hunter2\n-----BEGIN KEY-----\nTINY=abc\n"), 0o600)
+	s, err := Open(path, filepath.Join(dir, "pass"), func(b []byte) error { return os.WriteFile(path, b, 0o600) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Hide("ARTUS_TOKEN", "f00dfeedf00dfeedf00dfeed")
+	got := s.Redact("pin 48213, again 48213; not 1482130 or x48213; token f00dfeedf00dfeedf00dfeed; tiny abc")
+	want := "pin [secret:BANK_PIN], again [secret:BANK_PIN]; not 1482130 or x48213; token [secret:ARTUS_TOKEN]; tiny abc"
+	if got != want {
+		t.Errorf("Redact:\n got %q\nwant %q", got, want)
+	}
+	masked := s.Masked()
+	for _, leak := range []string{"48213", "sk-commented", "hunter2", "BEGIN KEY", "wrapped"} {
+		if strings.Contains(masked, leak) {
+			t.Errorf("Masked shows %q:\n%s", leak, masked)
+		}
+	}
+	// A value with quotes in it survives being written and read back.
+	if err := s.Set("Q2", `"both' kinds"`); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := Open(path, filepath.Join(dir, "pass"), nil)
+	for name, want := range map[string]string{"QUOTED": `"wrapped"`, "Q2": `"both' kinds"`} {
+		if v, err := again.Get(context.Background(), name, ""); err != nil || v != want {
+			t.Errorf("%s = %q, %v; want %q", name, v, err, want)
+		}
+	}
+	// Only the file counts as stored: a name from the environment can still be added.
+	t.Setenv("FROM_ENV_ONLY", "x")
+	if s.Stored("FROM_ENV_ONLY") || !s.Has("FROM_ENV_ONLY") {
+		t.Error("Stored must ignore the environment, Has must not")
+	}
+}
