@@ -297,6 +297,9 @@ func TestBash(t *testing.T) {
 		t.Error("the timeout did not stop the command")
 	}
 	res := f.results(id)
+	if real, err := filepath.EvalSymlinks(sub); err == nil {
+		sub = real // pwd prints the resolved path (/private/var/… on macOS)
+	}
 	if !strings.Contains(res[0].Text, sub) {
 		t.Errorf("cd: %q", res[0].Text)
 	}
@@ -487,7 +490,7 @@ func TestApprovalAndSecretRequest(t *testing.T) {
 		if !f.e.Answer(ask.ID, ans) {
 			t.Fatal("answer was not accepted")
 		}
-		for f.e.Live(meta.ID) != nil && f.e.Live(meta.ID).Ask != nil && f.e.Live(meta.ID).Ask.ID == ask.ID {
+		for live := f.e.Live(meta.ID); live != nil && live.Ask != nil && live.Ask.ID == ask.ID; live = f.e.Live(meta.ID) {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}

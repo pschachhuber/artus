@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -192,7 +193,7 @@ func (e *Engine) compact(ctx context.Context, r *run, s *session, midTask bool) 
 	e.record(s.meta.ID, Record{T: "compact", Summary: summary, Tokens: before})
 	e.begin(s)
 	text := "<summary>\n" + defuse(summary) + "\n</summary>\n\n<harness>The conversation so far was compacted into the summary above. " +
-		"The full transcript is " + e.Home.Path("chats", s.meta.ID+".jsonl") + "; grep that file if you need an exact detail."
+		"The full transcript is " + filepath.ToSlash(e.Home.Path("chats", s.meta.ID+".jsonl")) + "; grep that file if you need an exact detail."
 	if midTask {
 		text += " Continue the work from where it stopped."
 	}
