@@ -148,13 +148,13 @@ var anthropicFeatures = []feature{
 	{"eager", []string{"eager_input_streaming"}},
 	{"search", []string{"web_search"}},
 	{"cache_control", []string{"cache_control"}},
+	{"thinking", []string{"thinking"}}, // first: an error about thinking may also name output_config.effort
 	{"effort", []string{"output_config", "effort"}},
-	{"thinking", []string{"thinking"}},
 }
 
 // Models for which a safety classifier may decline a request, and the API
 // can re-serve it on a fallback model inside the same call.
-var fallbackModels = []string{"claude-fable-5-2", "claude-fable-5-1", "claude-mythos-5-2", "claude-mythos-5-1", "claude-opus-5", "claude-sonnet-5-5"}
+var fallbackModels = []string{"claude-fable-5", "claude-mythos-5", "claude-opus-5", "claude-sonnet-5-5"}
 
 // Stream implements Provider.
 func (a *Anthropic) Stream(ctx context.Context, req Request, emit func(Delta)) (*Response, error) {
@@ -162,6 +162,10 @@ func (a *Anthropic) Stream(ctx context.Context, req Request, emit func(Delta)) (
 	messages := a.messages(req)
 	for round := 0; round < 12; round++ {
 		resp, raw, err := a.once(ctx, req, messages, emit)
+		if round == 0 && staleReasoning(err) { // earlier thinking no longer verifies: answer without it
+			messages = a.messages(withoutReasoning(req))
+			resp, raw, err = a.once(ctx, req, messages, emit)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -268,6 +272,7 @@ func (a *Anthropic) send(ctx context.Context, req Request, messages []any, emit 
 
 	var blocks []map[string]any
 	partial := map[int]*strings.Builder{}
+	stopped := false
 	resp := &Response{Message: Message{Role: "assistant"}, Stop: StopEnd}
 	usage := func(raw json.RawMessage) {
 		var u struct {
@@ -372,6 +377,8 @@ func (a *Anthropic) send(ctx context.Context, req Request, messages []any, emit 
 			case "pause_turn":
 				resp.Stop = "pause"
 			}
+		case "message_stop":
+			stopped = true
 		case "error":
 			status := 500
 			if ev.Error.Type == "overloaded_error" {
@@ -381,10 +388,14 @@ func (a *Anthropic) send(ctx context.Context, req Request, messages []any, emit 
 		}
 		return nil
 	})
+	if err == nil && !stopped {
+		err = cutOff()
+	}
 	if err != nil {
 		return nil, nil, err
 	}
 
+	dropDeclined(blocks)
 	var raw []any
 	for i, b := range blocks {
 		if b == nil {
@@ -418,10 +429,43 @@ func (a *Anthropic) send(ctx context.Context, req Request, messages []any, emit 
 		}
 		resp.Message.Blocks = append(resp.Message.Blocks, block)
 	}
-	if resp.Stop == StopEnd && len(resp.Message.Calls()) > 0 {
-		resp.Stop = StopTool
-	}
+	finish(resp)
 	return resp, raw, nil
+}
+
+// dropDeclined applies a server-side fallback. When a model declines partway
+// through a reply, a fallback model carries on in the same response after a
+// "fallback" block. Of the content before the last such block, the API takes
+// back only text and server-tool calls with their results; the declined
+// model's thinking, tool calls and any other block of its own are removed
+// here, so they are neither run nor replayed. The fallback blocks stay where
+// they are: the API checks the thinking around them by their position.
+func dropDeclined(blocks []map[string]any) {
+	last := -1
+	for i, b := range blocks {
+		if str(b["type"]) == "fallback" {
+			last = i
+		}
+	}
+	if last <= 0 {
+		return
+	}
+	before := blocks[:last]
+	called, answered := map[string]bool{}, map[string]bool{}
+	for _, b := range before {
+		if kind := str(b["type"]); kind == "server_tool_use" {
+			called[str(b["id"])] = true
+		} else if strings.HasSuffix(kind, "_tool_result") {
+			answered[str(b["tool_use_id"])] = true
+		}
+	}
+	for i, b := range before {
+		kind := str(b["type"])
+		paired := (kind == "server_tool_use" && answered[str(b["id"])]) || (strings.HasSuffix(kind, "_tool_result") && called[str(b["tool_use_id"])])
+		if kind != "text" && kind != "fallback" && !paired {
+			before[i] = nil
+		}
+	}
 }
 
 func str(v any) string {

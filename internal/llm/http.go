@@ -29,7 +29,9 @@ var httpClient = &http.Client{Transport: &http.Transport{
 }}
 
 // postStream POSTs a JSON body and calls each for every server-sent event of
-// the response. A non-2xx status becomes an *Error.
+// the response. A non-2xx status becomes an *Error. Whether the stream got
+// to its end is for the caller to judge: each provider has its own closing
+// event, and a stream without it is reported with cutOff.
 func postStream(ctx context.Context, url string, headers map[string]string, body any, each func(event string, data []byte) error) error {
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -83,11 +85,21 @@ func postStream(ctx context.Context, url string, headers map[string]string, body
 				return ctx.Err()
 			}
 			if err == io.EOF {
+				if len(data) > 0 { // a last event without its closing blank line
+					return each(event, data)
+				}
 				return nil
 			}
 			return &Error{Message: "the response stream broke off: " + err.Error()}
 		}
 	}
+}
+
+// cutOff is the error for a stream that ended before the provider's closing
+// event, as when a proxy drops the connection mid-reply. It has no status,
+// so it counts as retryable.
+func cutOff() *Error {
+	return &Error{Message: "the connection closed before the reply was complete"}
 }
 
 // getJSON fetches and decodes a JSON document.
@@ -150,8 +162,8 @@ func errorMessage(body []byte, fallback string) string {
 	return fallback
 }
 
-// quirks remembers, per model, optional request features an endpoint turned
-// out to reject, so one failed attempt teaches the adapter to stop sending
+// quirks remembers, per model, optional request features an endpoint said it
+// does not support, so one failed attempt teaches the adapter to stop sending
 // them. This keeps the adapters free of per-model tables that go stale.
 type quirks struct {
 	mu  sync.Mutex
@@ -173,28 +185,98 @@ func (q *quirks) disable(model, feature string) {
 	q.off[model+"|"+feature] = true
 }
 
-// feature is an optional request field and the words in an error message
-// that show an endpoint does not accept it.
+// feature is an optional request field and the words that name it in an
+// error message.
 type feature struct {
 	name  string
 	hints []string
 }
 
-// rejected returns the first feature, in order, that a client-error response blames.
+// unsupported are the words with which an endpoint says it does not take a
+// parameter at all, as opposed to objecting to what one request carries.
+// Only such an error is remembered for the model.
+var unsupported = []string{"not supported", "unsupported", "does not support", "is not available for this model",
+	"unknown parameter", "unrecognized", "extra inputs are not permitted", "expected tags", "supported values",
+	"unexpected value", // an anthropic-beta header the endpoint does not know
+	"no endpoints found that support", "must be verified"}
+
+// rejected returns the first feature, in order, that a client-error response
+// says the endpoint does not support.
 func rejected(err error, features []feature) string {
 	e, ok := err.(*Error)
 	if !ok || (e.Status != 400 && e.Status != 404 && e.Status != 422) {
 		return ""
 	}
 	msg := strings.ToLower(e.Message)
+	if !mentions(msg, unsupported) {
+		return ""
+	}
 	for _, f := range features {
-		for _, hint := range f.hints {
-			if strings.Contains(msg, hint) {
-				return f.name
-			}
+		if mentions(msg, f.hints) {
+			return f.name
 		}
 	}
 	return ""
+}
+
+// staleReasoning reports a 400 about reasoning carried over from earlier
+// turns: a thinking signature or encrypted reasoning that no longer verifies
+// (an edited history, a key from another organization), or a reasoning item
+// out of place. It concerns one conversation, not the model, so it is not
+// remembered: the request is tried once more with withoutReasoning.
+func staleReasoning(err error) bool {
+	e, ok := err.(*Error)
+	if !ok || e.Status != 400 {
+		return false
+	}
+	msg := strings.ToLower(e.Message)
+	return !mentions(msg, unsupported) && mentions(msg, []string{"signature", "redacted_thinking", "encrypted content", "encrypted_content", "type 'reasoning'"})
+}
+
+// withoutReasoning returns a copy of req whose assistant turns leave out
+// their reasoning. The stored conversation is not changed.
+func withoutReasoning(req Request) Request {
+	msgs := make([]Message, len(req.Messages))
+	for i, m := range req.Messages {
+		if m.Role == "assistant" {
+			var kept []Block
+			for _, b := range m.Blocks {
+				if b.Type != Thinking && !(b.Type == Opaque && b.Name == "redacted_thinking") {
+					kept = append(kept, b)
+				}
+			}
+			m.Blocks = kept
+		}
+		msgs[i] = m
+	}
+	req.Messages = msgs
+	return req
+}
+
+// finish settles the stop reason of a complete reply: one with tool calls
+// stops for them, and a declined one hands out no calls at all.
+func finish(resp *Response) {
+	switch {
+	case resp.Stop == StopRefusal:
+		var kept []Block
+		for _, b := range resp.Message.Blocks {
+			if b.Type != ToolCall {
+				kept = append(kept, b)
+			}
+		}
+		resp.Message.Blocks = kept
+	case resp.Stop == StopEnd && len(resp.Message.Calls()) > 0:
+		resp.Stop = StopTool
+	}
+}
+
+func mentions(msg string, words []string) bool {
+	for _, w := range words {
+		if strings.Contains(msg, w) {
+			return true
+		}
+	}
+	return false
 }
 
 // dataURL renders an attachment as a data: URL, or returns a note for the

@@ -111,10 +111,15 @@ var openrouterFeatures = []feature{
 
 // Stream implements Provider.
 func (o *OpenRouter) Stream(ctx context.Context, req Request, emit func(Delta)) (*Response, error) {
+	stripped := false
 	for attempt := 0; ; attempt++ {
 		resp, err := o.send(ctx, req, emit)
 		if f := rejected(err, openrouterFeatures); f != "" && attempt < len(openrouterFeatures) && !o.quirks.disabled(req.Model, f) {
 			o.quirks.disable(req.Model, f)
+			continue
+		}
+		if !stripped && staleReasoning(err) {
+			stripped, req = true, withoutReasoning(req)
 			continue
 		}
 		return resp, err
@@ -161,9 +166,11 @@ func (o *OpenRouter) send(ctx context.Context, req Request, emit func(Delta)) (*
 	var calls []*call
 	searches := 0
 	details := map[int]map[string]any{}
+	done := false // a finish reason or [DONE] arrived
 	resp := &Response{Message: Message{Role: "assistant"}, Stop: StopEnd}
 	err = postStream(ctx, o.Base+"/chat/completions", headers, body, func(_ string, data []byte) error {
 		if string(data) == "[DONE]" {
+			done = true
 			return nil
 		}
 		var chunk struct {
@@ -251,6 +258,7 @@ func (o *OpenRouter) send(ctx context.Context, req Request, emit func(Delta)) (*
 					emit(Delta{Kind: "tool", ID: c.id, Text: tc.Function.Arguments})
 				}
 			}
+			done = done || choice.FinishReason != ""
 			switch choice.FinishReason {
 			case "length":
 				resp.Stop = StopLength
@@ -260,6 +268,9 @@ func (o *OpenRouter) send(ctx context.Context, req Request, emit func(Delta)) (*
 		}
 		return nil
 	})
+	if err == nil && !done {
+		err = cutOff()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -294,10 +305,8 @@ func (o *OpenRouter) send(ctx context.Context, req Request, emit func(Delta)) (*
 			continue
 		}
 		resp.Message.Blocks = append(resp.Message.Blocks, Block{Type: ToolCall, ID: c.id, Name: c.name, Input: arguments(c.args.String())})
-		if resp.Stop == StopEnd {
-			resp.Stop = StopTool
-		}
 	}
+	finish(resp)
 	return resp, nil
 }
 

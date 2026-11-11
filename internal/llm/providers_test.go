@@ -187,7 +187,8 @@ func TestAnthropicFallbacksAndErrors(t *testing.T) {
 		switch n {
 		case 1:
 			return 200, sse(`{"type":"message_start","message":{"usage":{"input_tokens":5}}}`,
-				`{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"category":"cyber","explanation":"declined"}},"usage":{"output_tokens":1}}`)
+				`{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"category":"cyber","explanation":"declined"}},"usage":{"output_tokens":1}}`,
+				`{"type":"message_stop"}`)
 		case 2:
 			return 529, `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`
 		default:
@@ -389,5 +390,260 @@ func TestNormalizeAndEffort(t *testing.T) {
 	}
 	if string(arguments(`{"a":1`)) != `"{\"a\":1"` || string(arguments("")) != "{}" || string(arguments(` {"a":1} `)) != `{"a":1}` {
 		t.Error("arguments: truncated JSON must become a string, empty an object")
+	}
+}
+
+// A stream that stops before its closing event is a dropped connection, not an
+// answer: every adapter must report it as a retryable error. The same stream
+// with its closing event is a reply, even when the last event lacks the blank
+// line that should end it.
+func TestTruncatedStreams(t *testing.T) {
+	cases := []struct {
+		name          string
+		provider      func(base string) Provider
+		cut, complete string
+	}{
+		{"anthropic", func(base string) Provider { a := NewAnthropic(staticKey); a.Base = base; return a },
+			sse(`{"type":"message_start","message":{"usage":{"input_tokens":10}}}`,
+				`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+				`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"The first step is to"}}`),
+			sse(`{"type":"content_block_stop","index":0}`, `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
+				`{"type":"message_stop"}`)},
+		{"openai", func(base string) Provider { o := NewOpenAI(staticKey); o.Base = base; return o },
+			sse(`{"type":"response.created"}`, `{"type":"response.output_text.delta","delta":"The first step is to"}`),
+			sse(`{"type":"response.output_item.done","item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"The first step is to"}]}}`,
+				`{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":10,"output_tokens":5}}}`)},
+		{"openrouter", func(base string) Provider { o := NewOpenRouter(staticKey); o.Base = base; return o },
+			sse(`{"choices":[{"delta":{"content":"The first step is to"}}]}`),
+			sse(`{"choices":[{"delta":{},"finish_reason":"stop"}]}`)}, // a finish reason is enough without [DONE]
+	}
+	for _, c := range cases {
+		api := newFakeAPI(t, func(n int, body map[string]any) (int, string) {
+			if n == 1 {
+				return 200, c.cut
+			}
+			return 200, strings.TrimSuffix(c.cut+c.complete, "\n\n")
+		})
+		p := c.provider(api.URL)
+		req := Request{ID: c.name + "/m", Model: "m", Messages: []Message{UserText("hi")}}
+		resp, err := p.Stream(context.Background(), req, func(Delta) {})
+		if e, ok := err.(*Error); !ok || e.Message != "the connection closed before the reply was complete" || !e.Retryable() || resp != nil {
+			t.Errorf("%s: a stream without its closing event must be a retryable error, got %#v, %+v", c.name, err, resp)
+		}
+		resp, err = p.Stream(context.Background(), req, func(Delta) {})
+		if err != nil || resp.Stop != StopEnd || resp.Message.TextOf() != "The first step is to" {
+			t.Errorf("%s: a complete stream: %v, %+v", c.name, err, resp)
+		}
+	}
+}
+
+// Only an error that says a parameter is unsupported switches it off for the
+// model. A 400 about one conversation's content, such as a thinking signature
+// that no longer verifies, is answered by trying that one request again
+// without the earlier thinking; nothing is remembered.
+func TestAnthropicRejections(t *testing.T) {
+	ok := sse(`{"type":"message_start","message":{"usage":{"input_tokens":5}}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`, `{"type":"message_stop"}`)
+	unknownBeta := "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Unexpected value(s) `server-side-fallback-2026-07-01` for the `anthropic-beta` header.\"}}"
+	badSignature := "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"messages.1.content.0: Invalid `signature` in `thinking` block. The block is bound to a different conversation.\"}}"
+	api := newFakeAPI(t, func(n int, body map[string]any) (int, string) {
+		msgs := jsonOf(body["messages"])
+		switch {
+		case n == 1:
+			return 400, unknownBeta
+		case strings.Contains(msgs, `"type":"thinking"`) || strings.Contains(msgs, "broken"):
+			return 400, badSignature
+		}
+		return 200, ok
+	})
+	a := NewAnthropic(staticKey)
+	a.Base = api.URL
+	req := Request{ID: "anthropic/claude-opus-5", Model: "claude-opus-5", Messages: []Message{
+		UserText("hi"),
+		{Role: "assistant", Model: "anthropic/claude-opus-5", Blocks: []Block{
+			{Type: Thinking, Text: "old", Raw: json.RawMessage(`{"type":"thinking","thinking":"old","signature":"SIG"}`)},
+			{Type: Text, Text: "Hello.", Raw: json.RawMessage(`{"type":"text","text":"Hello."}`)}}},
+		UserText("again")}}
+	stream := func(r Request) error { _, err := a.Stream(context.Background(), r, func(Delta) {}); return err }
+
+	if err := stream(req); err != nil {
+		t.Fatal(err)
+	}
+	if first, third := jsonOf(api.body(0)), jsonOf(api.body(2)); !strings.Contains(first, `"fallbacks"`) || strings.Contains(third, `"fallbacks"`) {
+		t.Errorf("an unknown beta should switch fallbacks off:\n%s\n%s", first, third)
+	}
+	retry := jsonOf(api.body(2))
+	if strings.Contains(retry, "SIG") || !strings.Contains(retry, "Hello.") || !strings.Contains(retry, `"display":"summarized"`) || !strings.Contains(retry, "block_binding") {
+		t.Errorf("the retry should keep thinking on and leave out only the earlier thinking:\n%s", retry)
+	}
+	if err := stream(req); err != nil || !strings.Contains(jsonOf(api.body(3)), "SIG") {
+		t.Errorf("leaving out the thinking was for one request only: %v\n%s", err, jsonOf(api.body(3)))
+	}
+	broken := Request{ID: req.ID, Model: req.Model, Messages: []Message{UserText("broken")}}
+	if e, isErr := stream(broken).(*Error); !isErr || e.Status != 400 || !strings.Contains(e.Message, "signature") || len(api.bodies) != 7 {
+		t.Errorf("a request that fails with and without the thinking should fail after one retry: %#v, %d requests", e, len(api.bodies))
+	}
+	other := Request{ID: req.ID, Model: req.Model, Messages: []Message{UserText("another chat")}}
+	if err := stream(other); err != nil || !strings.Contains(jsonOf(api.body(7)), `"type":"adaptive"`) || !strings.Contains(api.header.Get("anthropic-beta"), "thinking-binding") {
+		t.Errorf("another chat must still get thinking: %v\n%s", err, jsonOf(api.body(7)))
+	}
+}
+
+// An unverified organization loses only the reasoning summary; encrypted
+// reasoning that no longer verifies is left out of one retry, not remembered.
+func TestOpenAIRejections(t *testing.T) {
+	verify := `{"error":{"message":"Your organization must be verified to generate reasoning summaries. Please go to: https://platform.openai.com/settings/organization/general and click on Verify Organization.","type":"invalid_request_error","param":"reasoning.summary","code":"unsupported_value"}}`
+	stale := `{"error":{"message":"The encrypted content for item rs_1 could not be verified.","type":"invalid_request_error","param":null,"code":"invalid_encrypted_content"}}`
+	api := newFakeAPI(t, func(n int, body map[string]any) (int, string) {
+		switch {
+		case n == 1:
+			return 400, verify
+		case strings.Contains(jsonOf(body["input"]), "OLD"):
+			return 400, stale
+		}
+		return 200, sse(`{"type":"response.output_item.done","item":{"id":"msg_2","type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}}`,
+			`{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}`)
+	})
+	o := NewOpenAI(staticKey)
+	o.Base = api.URL
+	req := Request{ID: "openai/gpt-test", Model: "gpt-test", Effort: "high", Messages: []Message{
+		UserText("hi"),
+		{Role: "assistant", Model: "openai/gpt-test", Blocks: []Block{
+			{Type: Thinking, Raw: json.RawMessage(`{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":"OLD"}`)}, {Type: Text, Text: "Hello."}}},
+		UserText("again")}}
+	for i := 0; i < 2; i++ {
+		if resp, err := o.Stream(context.Background(), req, func(Delta) {}); err != nil || resp.Message.TextOf() != "ok" {
+			t.Fatalf("stream %d: %v", i, err)
+		}
+	}
+	if len(api.bodies) != 5 {
+		t.Fatalf("want 5 requests (summary off, stale retry, then stale retry again), got %d", len(api.bodies))
+	}
+	if got := jsonOf(api.body(0)["reasoning"]); got != `{"effort":"high","summary":"auto"}` {
+		t.Errorf("the first request should ask for a summary: %s", got)
+	}
+	for i := 1; i < 5; i++ {
+		if got := jsonOf(api.body(i)["reasoning"]); got != `{"effort":"high"}` {
+			t.Errorf("request %d: reasoning %s; only the summary should be gone", i+1, got)
+		}
+	}
+	if retry := jsonOf(api.body(2)); strings.Contains(retry, "OLD") || !strings.Contains(retry, "Hello.") || !strings.Contains(retry, "reasoning.encrypted_content") {
+		t.Errorf("the retry should leave out the old reasoning item only:\n%s", retry)
+	}
+	if !strings.Contains(jsonOf(api.body(3)), "OLD") {
+		t.Error("the old reasoning should be tried again on the next request")
+	}
+}
+
+// OpenRouter passes the upstream error on inside its own; the retry leaves
+// out reasoning_details. A reply the content filter stopped hands out no calls.
+func TestOpenRouterStaleReasoningAndRefusal(t *testing.T) {
+	upstream := "{\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"message\\\":\\\"messages.1.content.0: Invalid `signature` in `thinking` block.\\\"}}\"}}}"
+	api := newFakeAPI(t, func(n int, body map[string]any) (int, string) {
+		if strings.Contains(jsonOf(body["messages"]), "reasoning_details") {
+			return 400, upstream
+		}
+		return 200, sse(`{"choices":[{"delta":{"content":"Sav","tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"note","arguments":"{}"}}]}}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"content_filter"}]}`, `[DONE]`)
+	})
+	o := NewOpenRouter(staticKey)
+	o.Base = api.URL
+	req := Request{ID: "openrouter/anthropic/claude-x", Model: "anthropic/claude-x", Effort: "high", Tools: []Tool{noteTool}, Messages: []Message{
+		UserText("hi"),
+		{Role: "assistant", Model: "openrouter/anthropic/claude-x", Blocks: []Block{
+			{Type: Thinking, Text: "old", Raw: json.RawMessage(`[{"type":"reasoning.text","text":"old","signature":"SIG"}]`)}, {Type: Text, Text: "Hello."}}},
+		UserText("again")}}
+	resp, err := o.Stream(context.Background(), req, func(Delta) {})
+	if err != nil || len(api.bodies) != 2 {
+		t.Fatalf("want one retry without the old reasoning: %v, %d requests", err, len(api.bodies))
+	}
+	if retry := jsonOf(api.body(1)); strings.Contains(retry, "SIG") || !strings.Contains(retry, `"reasoning":{"effort":"high"}`) {
+		t.Errorf("the retry should drop the old reasoning and keep the setting:\n%s", retry)
+	}
+	if resp.Stop != StopRefusal || len(resp.Message.Calls()) != 0 || resp.Message.TextOf() != "Sav" {
+		t.Errorf("a filtered reply must hand out no calls: stop=%s %+v", resp.Stop, resp.Message.Blocks)
+	}
+}
+
+// A server-side fallback inside one response: the declined model's thinking,
+// tool calls and unanswered server-tool calls before the last fallback block
+// are neither run nor replayed; its text, a complete search and the fallback
+// block itself are kept in place. A refused reply hands out no calls.
+func TestAnthropicFallbackBoundary(t *testing.T) {
+	boundary := sse(
+		`{"type":"message_start","message":{"usage":{"input_tokens":10}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sigDeclined"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Looking it up. "}}`,
+		`{"type":"content_block_stop","index":1}`,
+		`{"type":"content_block_start","index":2,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}}`,
+		`{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"milk\"}"}}`,
+		`{"type":"content_block_stop","index":2}`,
+		`{"type":"content_block_start","index":3,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[]}}`,
+		`{"type":"content_block_stop","index":3}`,
+		`{"type":"content_block_start","index":4,"content_block":{"type":"server_tool_use","id":"srvtoolu_2","name":"web_search","input":{}}}`,
+		`{"type":"content_block_stop","index":4}`,
+		`{"type":"content_block_start","index":5,"content_block":{"type":"redacted_thinking","data":"REDACTED"}}`,
+		`{"type":"content_block_stop","index":5}`,
+		`{"type":"content_block_start","index":6,"content_block":{"type":"tool_use","id":"toolu_declined","name":"note","input":{}}}`,
+		`{"type":"content_block_delta","index":6,"delta":{"type":"input_json_delta","partial_json":"{\"text\":\"declined\"}"}}`,
+		`{"type":"content_block_stop","index":6}`,
+		`{"type":"content_block_start","index":7,"content_block":{"type":"fallback","from":{"model":"claude-fable-5-2"},"to":{"model":"claude-opus-5"}}}`,
+		`{"type":"content_block_stop","index":7}`,
+		`{"type":"content_block_start","index":8,"content_block":{"type":"thinking","thinking":"","signature":""}}`,
+		`{"type":"content_block_delta","index":8,"delta":{"type":"signature_delta","signature":"sigFallback"}}`,
+		`{"type":"content_block_stop","index":8}`,
+		`{"type":"content_block_start","index":9,"content_block":{"type":"tool_use","id":"toolu_fallback","name":"note","input":{}}}`,
+		`{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"{\"text\":\"milk\"}"}}`,
+		`{"type":"content_block_stop","index":9}`,
+		`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":20}}`,
+		`{"type":"message_stop"}`)
+	refusal := sse(
+		`{"type":"message_start","message":{"usage":{"input_tokens":10}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Sure, "}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_refused","name":"note","input":{}}}`,
+		`{"type":"content_block_stop","index":1}`,
+		`{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"category":"cyber"}},"usage":{"output_tokens":3}}`,
+		`{"type":"message_stop"}`)
+	api := newFakeAPI(t, func(n int, body map[string]any) (int, string) {
+		if n == 1 {
+			return 200, boundary
+		}
+		return 200, refusal
+	})
+	a := NewAnthropic(staticKey)
+	a.Base = api.URL
+	req := Request{ID: "anthropic/claude-fable-5-2", Model: "claude-fable-5-2", Messages: []Message{UserText("hi")}, Tools: []Tool{noteTool}}
+	resp, err := a.Stream(context.Background(), req, func(Delta) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls := resp.Message.Calls(); resp.Stop != StopTool || len(calls) != 1 || calls[0].ID != "toolu_fallback" {
+		t.Fatalf("only the fallback model's call may run: stop=%s %+v", resp.Stop, calls)
+	}
+	resp.Message.Model = req.ID
+	replayed := jsonOf(a.messages(Request{ID: req.ID, Messages: []Message{UserText("hi"), resp.Message}})[1])
+	var turn struct{ Content []struct{ Type string } }
+	json.Unmarshal([]byte(replayed), &turn)
+	var kinds []string
+	for _, c := range turn.Content {
+		kinds = append(kinds, c.Type)
+	}
+	if got := strings.Join(kinds, ","); got != "text,server_tool_use,web_search_tool_result,fallback,thinking,tool_use" || !strings.Contains(replayed, "sigFallback") {
+		t.Errorf("replayed blocks: %s\n%s", got, replayed)
+	}
+	for _, gone := range []string{"sigDeclined", "srvtoolu_2", "REDACTED", "toolu_declined"} {
+		if strings.Contains(replayed, gone) {
+			t.Errorf("the declined model's %s was replayed", gone)
+		}
+	}
+
+	resp, err = a.Stream(context.Background(), req, func(Delta) {})
+	if err != nil || resp.Stop != StopRefusal || resp.Detail != "cyber" || len(resp.Message.Calls()) != 0 || resp.Message.TextOf() != "Sure, " {
+		t.Errorf("a refused reply must hand out no calls: %v stop=%s %+v", err, resp.Stop, resp.Message.Blocks)
 	}
 }

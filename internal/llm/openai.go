@@ -64,18 +64,23 @@ func openaiChatModel(id string) bool {
 var openaiFeatures = []feature{
 	{"xhigh", []string{"xhigh"}},
 	{"search", []string{"web_search"}},
-	{"include", []string{"encrypted_content", "'include'", "include["}},
+	{"include", []string{"encrypted_content", "encrypted content", "'include'", "include["}},
 	{"cache_key", []string{"prompt_cache_key"}},
-	{"summary", []string{"summary"}},
+	{"summary", []string{"summary", "summaries"}}, // also "your organization must be verified to generate reasoning summaries"
 	{"reasoning", []string{"reasoning"}},
 }
 
 // Stream implements Provider.
 func (o *OpenAI) Stream(ctx context.Context, req Request, emit func(Delta)) (*Response, error) {
+	stripped := false
 	for attempt := 0; ; attempt++ {
 		resp, err := o.send(ctx, req, emit)
 		if f := rejected(err, openaiFeatures); f != "" && attempt < len(openaiFeatures) && !o.quirks.disabled(req.Model, f) {
 			o.quirks.disable(req.Model, f)
+			continue
+		}
+		if !stripped && staleReasoning(err) {
+			stripped, req = true, withoutReasoning(req)
 			continue
 		}
 		return resp, err
@@ -122,6 +127,7 @@ func (o *OpenAI) send(ctx context.Context, req Request, emit func(Delta)) (*Resp
 
 	resp := &Response{Message: Message{Role: "assistant"}, Stop: StopEnd}
 	calls := map[string]string{} // output item id -> call id
+	done := false
 	err = postStream(ctx, o.Base+"/responses", headers, body, func(_ string, data []byte) error {
 		var ev struct {
 			Type   string          `json:"type"`
@@ -183,6 +189,7 @@ func (o *OpenAI) send(ctx context.Context, req Request, emit func(Delta)) (*Resp
 				resp.Stop, resp.Detail = StopRefusal, refusal
 			}
 		case "response.completed", "response.incomplete":
+			done = true
 			u := ev.Response.Usage
 			resp.Usage = Usage{Input: u.Input, Output: u.Output, CacheRead: u.Details.Cached, Cost: u.Cost}
 			if ev.Response.Incomplete != nil && strings.Contains(ev.Response.Incomplete.Reason, "max_output_tokens") {
@@ -205,12 +212,13 @@ func (o *OpenAI) send(ctx context.Context, req Request, emit func(Delta)) (*Resp
 		}
 		return nil
 	})
+	if err == nil && !done {
+		err = cutOff()
+	}
 	if err != nil {
 		return nil, err
 	}
-	if resp.Stop == StopEnd && len(resp.Message.Calls()) > 0 {
-		resp.Stop = StopTool
-	}
+	finish(resp)
 	return resp, nil
 }
 

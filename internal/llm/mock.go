@@ -30,6 +30,7 @@ type Step struct {
 	Calls    []Block // tool calls to make
 	Usage    Usage
 	Err      error
+	Stop     string // overrides the stop reason, e.g. StopRefusal
 }
 
 // Models implements Provider.
@@ -106,6 +107,9 @@ func (m *Mock) Stream(ctx context.Context, req Request, emit func(Delta)) (*Resp
 	if usage.Input == 0 {
 		usage.Input = EstimateTokens(req)
 		usage.Output = len(step.Text)/4 + 1
+	}
+	if step.Stop != "" {
+		stop = step.Stop
 	}
 	return &Response{Message: msg, Usage: usage, Stop: stop}, nil
 }
