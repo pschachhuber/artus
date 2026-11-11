@@ -717,3 +717,51 @@ func TestCheckpointAndTurnLimit(t *testing.T) {
 		t.Errorf("the user should be told why the run stopped: %+v", last)
 	}
 }
+
+func TestMessageSentAsARunEndsIsNotLost(t *testing.T) {
+	f := newFixture(t)
+	f.mock.Steps = []llm.Step{
+		{Calls: []llm.Block{call("write", `{"path":"topics/a.md","content":"x"}`)}},
+		{Text: "first answer"},
+		{Text: "late answer"},
+	}
+	meta, _ := f.e.NewChat(store.ChatMeta{})
+	inner := f.e.Emit
+	sent := false
+	f.e.Emit = func(ev Event) {
+		inner(ev)
+		// "changes" is published after the run last looked at its queue and before it is torn down.
+		if ev.Type == "changes" && !sent {
+			sent = true
+			if err := f.e.Send(meta.ID, Input{Text: "one more thing"}); err != nil {
+				t.Errorf("send: %v", err)
+			}
+		}
+	}
+	f.e.Send(meta.ID, Input{Text: "start"})
+	for deadline := time.Now().Add(15 * time.Second); f.lastText(meta.ID) != "late answer"; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the late message was dropped; last reply %q", f.lastText(meta.ID))
+		}
+	}
+	f.wait(meta.ID)
+	reqs := f.mock.Requests()
+	msgs := reqs[len(reqs)-1].Messages
+	if got := msgs[len(msgs)-1].TextOf(); !strings.Contains(got, "one more thing") {
+		t.Errorf("last request should end with the late message: %q", got)
+	}
+}
+
+func TestEmptyReplyIsNudgedOnce(t *testing.T) {
+	f := newFixture(t)
+	f.mock.Steps = []llm.Step{{Thinking: "hm"}, {Text: "Here is the answer."}}
+	id := f.say("", "question")
+	if got := f.lastText(id); got != "Here is the answer." {
+		t.Fatalf("after an empty reply the model should be asked once more, got %q", got)
+	}
+	f.mock.Steps = []llm.Step{{Thinking: "hm"}, {Thinking: "still nothing"}}
+	f.say(id, "again")
+	if n := len(f.mock.Requests()); n != 4 {
+		t.Errorf("an empty reply is retried once, not forever: %d requests", n)
+	}
+}

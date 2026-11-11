@@ -98,7 +98,7 @@ func (e *Engine) execute(ctx context.Context, r *run, meta store.ChatMeta, in In
 	e.saveMeta(s)
 
 	cfg := e.Home.Config()
-	continued := 0
+	continued, nudged := 0, false
 	for turn := 1; ; turn++ {
 		if ctx.Err() != nil {
 			e.note(meta.ID, "info", "Stopped.")
@@ -151,6 +151,11 @@ func (e *Engine) execute(ctx context.Context, r *run, meta store.ChatMeta, in In
 		case resp.Stop == llm.StopLength && continued < 2:
 			continued++
 			e.append(s, llm.Message{Role: "user", Synthetic: true, Blocks: []llm.Block{{Type: llm.Text, Text: "<harness>Your reply hit the output limit. Continue exactly where it stopped.</harness>"}}}, nil)
+			continue
+		case strings.TrimSpace(resp.Message.TextOf()) == "" && !nudged:
+			// Some models end a turn with nothing after their last tool result. Ask once for the answer.
+			nudged = true
+			e.append(s, llm.Message{Role: "user", Synthetic: true, Blocks: []llm.Block{{Type: llm.Text, Text: "<harness>Your reply was empty. Give your answer to the user, or continue the work.</harness>"}}}, nil)
 			continue
 		}
 

@@ -176,11 +176,13 @@ func (e *Engine) Send(chatID string, in Input) error {
 		return errors.New("shutting down")
 	}
 	if r := e.runs[chatID]; r != nil {
-		e.mu.Unlock()
+		// Queued under both locks, so the message is either seen by the run or
+		// picked up by finish: it cannot fall between a run ending and the next one.
 		r.mu.Lock()
 		r.queue = append(r.queue, in)
 		r.live.Queue = append(r.live.Queue, in.Text)
 		r.mu.Unlock()
+		e.mu.Unlock()
 		e.emitLive(r)
 		return nil
 	}
@@ -200,9 +202,19 @@ func (e *Engine) finish(r *run) {
 	r.cancel()
 	e.mu.Lock()
 	delete(e.runs, r.chat)
+	r.mu.Lock()
+	late := r.queue // sent after the run's last look at its queue
+	r.queue = nil
+	r.mu.Unlock()
+	stopped := e.stopped
 	e.mu.Unlock()
 	close(r.done)
 	e.emit(r.chat, "live", nil)
+	if !stopped {
+		for _, in := range late {
+			e.Send(r.chat, in)
+		}
+	}
 }
 
 // Stop cancels the run of a chat, if any, and waits for it to end.
