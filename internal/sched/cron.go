@@ -72,7 +72,10 @@ func cronValue(s string) (int, error) {
 }
 
 // nextCron returns the first time after `after` matching a five-field cron
-// expression (minute hour day-of-month month day-of-week), in local time.
+// expression (minute hour day-of-month month day-of-week) on the wall clock of
+// after's location. As in cron, a time that occurs twice when the clocks go
+// back fires once, at its first occurrence, and a time that the clocks skip
+// when they go forward fires once, at the moment they jump.
 func nextCron(expr string, after time.Time) (time.Time, error) {
 	if m, ok := cronMacros[strings.ToLower(expr)]; ok {
 		expr = m
@@ -111,22 +114,56 @@ func nextCron(expr string, after time.Time) (time.Time, error) {
 		}
 		return dom || dow // both restricted: either may match, as in cron
 	}
-	t := after.Truncate(time.Minute).Add(time.Minute)
-	for limit := after.AddDate(5, 0, 0); t.Before(limit); {
+	// Step through wall-clock readings, held as UTC times so that every day
+	// has 24 hours, and turn a match into an instant only at the end.
+	c := wallClock(after).Add(time.Minute)
+	for limit := c.AddDate(5, 0, 0); c.Before(limit); {
 		switch {
-		case !months[int(t.Month())]:
-			t = time.Date(t.Year(), t.Month()+1, 1, 0, 0, 0, 0, t.Location())
-		case !dayMatches(t):
-			t = time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, t.Location())
-		case !hours[t.Hour()]:
-			t = t.Truncate(time.Hour).Add(time.Hour)
-		case !minutes[t.Minute()]:
-			t = t.Add(time.Minute)
+		case !months[int(c.Month())]:
+			c = time.Date(c.Year(), c.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+		case !dayMatches(c):
+			c = time.Date(c.Year(), c.Month(), c.Day()+1, 0, 0, 0, 0, time.UTC)
+		case !hours[c.Hour()]:
+			c = time.Date(c.Year(), c.Month(), c.Day(), c.Hour()+1, 0, 0, 0, time.UTC)
+		case !minutes[c.Minute()]:
+			c = c.Add(time.Minute)
 		default:
-			return t, nil
+			if t := instant(c, after.Location()); t.After(after) {
+				return t, nil
+			}
+			c = c.Add(time.Minute) // the first occurrence of a repeated time has passed
 		}
 	}
 	return time.Time{}, errors.New("cron expression never fires")
+}
+
+// wallClock returns the reading of t's clock, to the minute, as a UTC time.
+func wallClock(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), 0, 0, time.UTC)
+}
+
+// instant returns the first moment at which the clocks in loc read c, or, if
+// they skip c when going forward, the moment they jump.
+func instant(c time.Time, loc *time.Location) time.Time {
+	// time.Date picks either reading of a repeated time, and moves a skipped
+	// one to either side of the jump.
+	t := time.Date(c.Year(), c.Month(), c.Day(), c.Hour(), c.Minute(), 0, 0, loc)
+	start, end := t.ZoneBounds()
+	switch w := wallClock(t); {
+	case w.After(c):
+		return start
+	case w.Before(c):
+		return end
+	case start.IsZero():
+		return t
+	}
+	// If the clocks went back at start, they may have read c before it too.
+	_, before := start.Add(-time.Second).Zone()
+	_, offset := t.Zone()
+	if first := t.Add(time.Duration(offset-before) * time.Second); first.Before(start) {
+		return first
+	}
+	return t
 }
 
 // Describe renders a stored schedule in plain language for the interface.

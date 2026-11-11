@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,19 +31,30 @@ type Trigger struct {
 
 // Scheduler keeps triggers in a JSON file and fires them when due.
 type Scheduler struct {
+	// OnError, if set before Run, is called on its own goroutine when the
+	// schedule cannot be saved after a trigger fires or is removed. The change
+	// stays in memory and Run retries the save every minute; OnError is not
+	// called again until a save has succeeded.
+	OnError func(error)
+
 	write func([]byte) error
 	fire  func(Trigger)
 	now   func() time.Time
+	poll  time.Duration // the longest Run sleeps
 
 	mu       sync.Mutex
 	triggers []Trigger
+	dirty    bool // the last save failed
 	changed  chan struct{}
 }
 
 // New loads the triggers stored at path. write persists the file and fire is
 // called, on its own goroutine, each time a trigger comes due.
 func New(path string, write func([]byte) error, fire func(Trigger)) (*Scheduler, error) {
-	s := &Scheduler{write: write, fire: fire, now: time.Now, changed: make(chan struct{}, 1)}
+	s := &Scheduler{write: write, fire: fire, poll: time.Minute, changed: make(chan struct{}, 1)}
+	// Triggers are due by the wall clock: drop the monotonic reading, which
+	// stops while the computer sleeps.
+	s.now = func() time.Time { return time.Now().Round(0) }
 	b, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -54,20 +67,29 @@ func New(path string, write func([]byte) error, fire func(Trigger)) (*Scheduler,
 	return s, nil
 }
 
+// save writes the triggers. The caller holds s.mu.
 func (s *Scheduler) save() error {
 	b, err := json.MarshalIndent(s.triggers, "", "  ")
-	if err != nil {
-		return err
+	if err == nil {
+		err = s.write(append(b, '\n'))
 	}
-	select {
-	case s.changed <- struct{}{}:
-	default:
+	s.dirty = err != nil
+	return err
+}
+
+// keep saves a change it cannot hand back, such as a firing: if the save
+// fails the change stays in memory, OnError hears of it and Run retries.
+// The caller holds s.mu.
+func (s *Scheduler) keep() {
+	reported := s.dirty
+	if err := s.save(); err != nil && !reported && s.OnError != nil {
+		go s.OnError(fmt.Errorf("cannot save the schedule: %w", err))
 	}
-	return s.write(append(b, '\n'))
 }
 
 // Add creates a trigger. when is "cron <expr>", "every <duration>",
-// "in <duration>" or "at <time>".
+// "in <duration>" or "at <time>". If the trigger cannot be saved, Add returns
+// the error and schedules nothing.
 func (s *Scheduler) Add(target, when, note string) (Trigger, error) {
 	now := s.now()
 	next, normalized, err := Parse(when, now)
@@ -79,8 +101,17 @@ func (s *Scheduler) Add(target, when, note string) (Trigger, error) {
 	t := Trigger{ID: "t" + hex.EncodeToString(id), Target: target, When: normalized, Note: note, Next: next, Created: now}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	dirty := s.dirty
 	s.triggers = append(s.triggers, t)
-	return t, s.save()
+	if err := s.save(); err != nil {
+		s.triggers, s.dirty = s.triggers[:len(s.triggers)-1], dirty
+		return Trigger{}, err
+	}
+	select {
+	case s.changed <- struct{}{}:
+	default:
+	}
+	return t, nil
 }
 
 // Remove deletes a trigger by id.
@@ -105,7 +136,7 @@ func (s *Scheduler) remove(match func(Trigger) bool) bool {
 	removed := len(kept) != len(s.triggers)
 	if removed {
 		s.triggers = kept
-		s.save()
+		s.keep()
 	}
 	return removed
 }
@@ -125,10 +156,12 @@ func (s *Scheduler) List(target string) []Trigger {
 }
 
 // Run fires due triggers until ctx ends. Triggers that came due while Artus
-// was not running fire once at start.
+// was not running fire once at start. Timers stop while the computer sleeps,
+// so Run wakes at least every minute to check the wall clock (and to retry a
+// failed save).
 func (s *Scheduler) Run(ctx context.Context) {
 	for {
-		wait := s.tick()
+		wait := min(s.tick(), s.poll)
 		select {
 		case <-ctx.Done():
 			return
@@ -160,9 +193,9 @@ func (s *Scheduler) tick() time.Duration {
 		}
 		kept = append(kept, t)
 	}
-	if len(due) > 0 {
+	if len(due) > 0 || s.dirty {
 		s.triggers = kept
-		s.save()
+		s.keep()
 	}
 	s.mu.Unlock()
 	for _, t := range due {
@@ -204,6 +237,9 @@ func Parse(when string, now time.Time) (next time.Time, normalized string, err e
 		if err != nil {
 			return next, "", err
 		}
+		if next.Before(now.Add(-time.Minute)) {
+			return next, "", fmt.Errorf("%s has already passed (it is now %s)", next.Format("2006-01-02 15:04"), now.Format("2006-01-02 15:04"))
+		}
 		return next, "at " + next.Format(time.RFC3339), nil
 	case "now":
 		return now, "at " + now.Format(time.RFC3339), nil
@@ -211,35 +247,29 @@ func Parse(when string, now time.Time) (next time.Time, normalized string, err e
 	return next, "", fmt.Errorf(`cannot read %q: use "cron <m h dom mon dow>", "every <2h>", "in <30m>", "at <2026-12-01T09:00>" or "now"`, when)
 }
 
-// parseDuration extends time.ParseDuration with days and weeks ("1d", "2w", "1d12h").
+// parseDuration reads durations such as 30m, 2h, 1d, 1w, 1d12h or 1.5h.
 func parseDuration(s string) (time.Duration, error) {
-	s = strings.ReplaceAll(strings.ToLower(s), " ", "")
+	rest := strings.ReplaceAll(strings.ToLower(s), " ", "")
 	var total time.Duration
-	for _, unit := range []struct {
-		suffix string
-		length time.Duration
-	}{{"w", 7 * 24 * time.Hour}, {"d", 24 * time.Hour}} {
-		if i := strings.Index(s, unit.suffix); i > 0 {
-			var n int
-			if _, err := fmt.Sscanf(s[:i], "%d", &n); err != nil {
-				return 0, fmt.Errorf("cannot read duration %q", s)
-			}
-			total += time.Duration(n) * unit.length
-			s = s[i+1:]
-		}
-	}
-	if s != "" {
-		d, err := time.ParseDuration(s)
-		if err != nil {
+	for rest != "" {
+		m := durationPart.FindStringSubmatch(rest)
+		if m == nil {
 			return 0, fmt.Errorf("cannot read duration %q: use forms like 30m, 2h, 1d, 1w", s)
 		}
-		total += d
+		n, _ := strconv.ParseFloat(m[1], 64)
+		total += time.Duration(n * float64(durationUnits[m[2]]))
+		rest = rest[len(m[0]):]
 	}
 	if total <= 0 {
 		return 0, errors.New("duration must be positive")
 	}
 	return total, nil
 }
+
+var (
+	durationPart  = regexp.MustCompile(`^(\d+(?:\.\d+)?)(ms|s|m|h|d|w)`)
+	durationUnits = map[string]time.Duration{"ms": time.Millisecond, "s": time.Second, "m": time.Minute, "h": time.Hour, "d": 24 * time.Hour, "w": 7 * 24 * time.Hour}
+)
 
 // parseTime reads an absolute time; forms without a zone are local time.
 func parseTime(s string, now time.Time) (time.Time, error) {
