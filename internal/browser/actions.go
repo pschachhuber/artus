@@ -264,9 +264,6 @@ func (t *tab) fill(ctx context.Context, target, value string, timeout time.Durat
 			return "", nil
 		}
 		// The control is focused with its content selected: typing replaces it.
-		if value == "" {
-			return "", t.pressKey(ctx, "Delete")
-		}
 		return "", t.insertText(ctx, value)
 	})
 	return label, err

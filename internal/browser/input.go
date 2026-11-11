@@ -165,10 +165,35 @@ func parseModifiers(list string) (int, error) {
 	return mask, nil
 }
 
-// macCommands maps Command shortcuts to editing commands: synthesized key
-// events do not reach the macOS menu that normally implements them.
+// macCommands maps key presses, written as modifiers plus key code, to the
+// editing command macOS attaches to them. There the system, not the browser
+// engine, turns keys into caret movement, deletion and clipboard actions,
+// which synthesized key events bypass unless the command is sent along.
 var macCommands = map[string]string{
-	"a": "selectAll", "c": "copy", "x": "cut", "v": "paste", "z": "undo", "Z": "redo",
+	"Backspace": "deleteBackward", "Delete": "deleteForward", "Escape": "cancelOperation",
+	"ArrowUp": "moveUp", "ArrowDown": "moveDown", "ArrowLeft": "moveLeft", "ArrowRight": "moveRight",
+	"Shift+ArrowUp": "moveUpAndModifySelection", "Shift+ArrowDown": "moveDownAndModifySelection",
+	"Shift+ArrowLeft": "moveLeftAndModifySelection", "Shift+ArrowRight": "moveRightAndModifySelection",
+	"Home": "scrollToBeginningOfDocument", "End": "scrollToEndOfDocument",
+	"PageUp": "scrollPageUp", "PageDown": "scrollPageDown",
+	"Alt+ArrowLeft": "moveWordLeft", "Alt+ArrowRight": "moveWordRight", "Alt+Backspace": "deleteWordBackward",
+	"Meta+ArrowLeft": "moveToLeftEndOfLine", "Meta+ArrowRight": "moveToRightEndOfLine",
+	"Meta+ArrowUp": "moveToBeginningOfDocument", "Meta+ArrowDown": "moveToEndOfDocument",
+	"Meta+Backspace": "deleteToBeginningOfLine",
+	"Meta+KeyA":      "selectAll", "Meta+KeyC": "copy", "Meta+KeyX": "cut", "Meta+KeyV": "paste",
+	"Meta+KeyZ": "undo", "Shift+Meta+KeyZ": "redo",
+}
+
+// macCommand returns the editing command for a key pressed with modifiers,
+// or "".
+func macCommand(code string, modifiers int) string {
+	shortcut := ""
+	for _, m := range []string{"Shift", "Control", "Alt", "Meta"} {
+		if modifiers&modifierBit(m) != 0 {
+			shortcut += m + "+"
+		}
+	}
+	return macCommands[shortcut+code]
 }
 
 // dispatchKey sends one key event with an explicit modifier mask.
@@ -191,7 +216,7 @@ func dispatchKey(ctx context.Context, sess *cdpSession, down bool, def keyDef, m
 		if text != "" {
 			params["type"], params["text"], params["unmodifiedText"] = "keyDown", text, text
 		}
-		if command, ok := macCommands[def.key]; ok && runtime.GOOS == "darwin" && modifiers&^modShift == modMeta {
+		if command := macCommand(def.code, modifiers); command != "" && runtime.GOOS == "darwin" {
 			params["commands"] = []string{command}
 		}
 	}

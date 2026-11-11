@@ -130,6 +130,15 @@ func TestKeyCombos(t *testing.T) {
 			t.Errorf("keyboard[%q] = %+v, want %+v", def, got, want)
 		}
 	}
+	for want, got := range map[string]string{
+		"selectAll": macCommand("KeyA", modMeta), "redo": macCommand("KeyZ", modShift|modMeta),
+		"deleteBackward": macCommand("Backspace", 0), "moveLeftAndModifySelection": macCommand("ArrowLeft", modShift),
+		"": macCommand("KeyA", modControl),
+	} {
+		if got != want {
+			t.Errorf("macCommand = %q, want %q", got, want)
+		}
+	}
 	if mask, err := parseModifiers("Shift, Ctrl,Alt"); err != nil || mask != modShift|modControl|modAlt {
 		t.Errorf("parseModifiers = %d, %v", mask, err)
 	}

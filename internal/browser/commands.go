@@ -37,7 +37,7 @@ func init() {
 		{name: "hover", group: "Core", usage: "<ref>", help: "move the mouse over an element", minArgs: 1, maxArgs: 1, needsBrowser: true, run: cmdHover},
 		{name: "fill", group: "Core", usage: "<ref> <text> [--submit] | <ref> --secret NAME | <ref> --totp NAME", help: "replace the content of a text field (also date, time, color, range inputs)", minArgs: 1, maxArgs: 2, flags: []string{"submit", "secret", "totp"}, needsBrowser: true, run: cmdFill},
 		{name: "type", group: "Core", usage: "<text> [--submit] | --secret NAME | --totp NAME", help: "type into the focused element, key by key", maxArgs: 1, flags: []string{"submit", "secret", "totp"}, needsBrowser: true, run: cmdFill},
-		{name: "press", group: "Core", usage: "<key>", help: "press a key or combination: Enter, Escape, ArrowDown, Control+A, Shift+Tab", minArgs: 1, maxArgs: 1, needsBrowser: true, run: cmdPress},
+		{name: "press", group: "Core", usage: "<key>", help: "press a key or combination: Enter, Escape, ArrowDown, Shift+Tab, ControlOrMeta+A (select all on any OS)", minArgs: 1, maxArgs: 1, needsBrowser: true, run: cmdPress},
 		{name: "select", group: "Core", usage: "<ref> <value...>", help: "select options of a <select> by value or label", minArgs: 2, maxArgs: -1, needsBrowser: true, run: cmdSelect},
 		{name: "check", group: "Core", usage: "<ref>", help: "check a checkbox or radio button", minArgs: 1, maxArgs: 1, needsBrowser: true, run: cmdCheck},
 		{name: "uncheck", group: "Core", usage: "<ref>", help: "uncheck a checkbox", minArgs: 1, maxArgs: 1, needsBrowser: true, run: cmdCheck},

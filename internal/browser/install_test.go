@@ -221,7 +221,11 @@ func TestBrowserIsDownloadedOnDemand(t *testing.T) {
 	if *downloads != 1 {
 		t.Errorf("the browser was downloaded %d times, want once", *downloads)
 	}
-	mustContain(t, e.run("doctor"), "downloaded Chrome for Testing 999.0.0.1", "System libraries: all present")
+	doctor := e.run("doctor")
+	mustContain(t, doctor, "downloaded Chrome for Testing 999.0.0.1")
+	if runtime.GOOS == "linux" { // shared libraries are only checked there
+		mustContain(t, doctor, "System libraries: all present")
+	}
 }
 
 // TestRealChromeDownload downloads the real Chrome for Testing build. It

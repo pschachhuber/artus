@@ -91,11 +91,16 @@ func TestFormFillTypePressSubmit(t *testing.T) {
 	// Typing goes to the focused element; Control+A then typing replaces.
 	e.run("click", ref(t, out, `textbox "Code"`))
 	e.run("type", "first draft")
-	e.run("press", "Control+A")
+	e.run("press", "ControlOrMeta+A") // select all: Control or, on macOS, Command
 	out = e.run("type", "Zürich 42!")
 	mustContain(t, out, `Typed "Zürich 42!"`, "]: Zürich 42!")
 
-	out = e.run("fill", ref(t, out, `textbox "Notes"`), "line one")
+	notes := ref(t, out, `textbox "Notes"`)
+	e.run("fill", notes, "to be removed")
+	out = e.run("fill", notes, "") // filling with nothing clears the field
+	mustContain(t, out, `textbox "Notes" [active] [ref=`+notes+"]\n")
+	mustContain(t, e.run("eval", "document.querySelector('[name=notes]').value"), `""`)
+	out = e.run("fill", notes, "line one")
 	mustContain(t, out, "]: line one")
 	e.run("fill", ref(t, out, `textbox "When"`), "2031-04-05")
 	e.run("fill", ref(t, out, `slider "Volume"`), "8")

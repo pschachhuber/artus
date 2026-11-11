@@ -160,7 +160,9 @@ function fill(e, value) {
     return { error: 'Element is not an <input>, <textarea> or [contenteditable] element' };
   }
   selectText(e);
-  return { result: 'needsinput' };
+  if (value !== '') return { result: 'needsinput' };
+  e.ownerDocument.execCommand('delete');
+  return { result: 'done' };
 }
 
 function selectOptions(e, wanted) {
