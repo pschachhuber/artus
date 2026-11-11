@@ -1,0 +1,11 @@
+# Build output
+/artus
+/artus.exe
+/dist/
+
+# Local data and editor files never belong in the repository
+.env
+*.log
+.DS_Store
+.idea/
+.vscode/
