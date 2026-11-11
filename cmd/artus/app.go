@@ -23,6 +23,7 @@ import (
 	"github.com/pschachhuber/artus/internal/secrets"
 	"github.com/pschachhuber/artus/internal/server"
 	"github.com/pschachhuber/artus/internal/store"
+	"github.com/pschachhuber/artus/internal/update"
 	"github.com/pschachhuber/artus/web"
 )
 
@@ -34,6 +35,7 @@ type app struct {
 	sched   *sched.Scheduler
 	browser *browser.Manager
 	server  *server.Server
+	updates *update.Service
 	http    *http.Server
 	cancel  context.CancelFunc
 }
@@ -109,7 +111,41 @@ func newApp(dir string) (*app, error) {
 		Home: home, Engine: a.engine, Secrets: a.secrets, LLM: reg, Sched: a.sched,
 		Browser: browserAdapter{a.browser}, UI: web.Files(), Version: version,
 	})
+	a.updates = &update.Service{
+		Updater: update.New(version),
+		Mode:    func() string { return a.home.Config().Update },
+		Idle:    a.idle,
+		Changed: func(st update.Status) { a.server.Publish("update", st) },
+		Restart: a.restart,
+	}
 	return a, nil
+}
+
+// idle reports whether restarting would interrupt nothing: no chat or task is
+// running and no one is being waited for in the browser.
+func (a *app) idle() bool {
+	if len(a.engine.Running()) > 0 {
+		return false
+	}
+	for _, s := range a.browser.Status() {
+		if s.Handoff != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// restart stops everything and runs the freshly installed program in this
+// process's place, with the same arguments.
+func (a *app) restart() {
+	fmt.Println("Restarting into the new version…")
+	exe := a.updates.Updater.Exe
+	a.close()
+	env := append(os.Environ(), "ARTUS_UPDATED_FROM="+version)
+	if err := update.Restart(exe, env); err != nil {
+		fmt.Fprintln(os.Stderr, "artus: could not restart:", err, "(start Artus again to use the new version)")
+		os.Exit(1)
+	}
 }
 
 // launcher makes the command `artus` available to everything the agent runs,

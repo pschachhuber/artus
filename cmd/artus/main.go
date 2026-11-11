@@ -21,6 +21,7 @@ import (
 
 	"github.com/pschachhuber/artus/internal/browser"
 	"github.com/pschachhuber/artus/internal/store"
+	"github.com/pschachhuber/artus/internal/update"
 )
 
 // version is set at build time.
@@ -39,6 +40,7 @@ Usage:
   artus url                  print the link that signs a browser in
   artus browser <command>    drive the browser (see: artus browser help)
   artus secret add NAME      store a secret read from standard input
+  artus update [--check]     install the latest release (--check: only look)
   artus version
 
 The data folder is ~/.artus, or $ARTUS_HOME.
@@ -62,6 +64,8 @@ func main() {
 		err = browserCommand(args)
 	case "secret":
 		err = secretCommand(args)
+	case "update":
+		err = updateCommand(args)
 	case "version", "--version", "-v":
 		fmt.Println("artus", version)
 	case "help", "--help", "-h":
@@ -82,6 +86,11 @@ func serve(args []string) error {
 	noOpen := fs.Bool("no-open", false, "do not open a browser window")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	fs.Parse(args)
+	updatedFrom := os.Getenv("ARTUS_UPDATED_FROM") // set when an update restarted Artus
+	os.Unsetenv("ARTUS_UPDATED_FROM")
+	if updatedFrom != "" {
+		*noOpen = true // the open tab reconnects by itself
+	}
 
 	if url, ok := liveServer(store.DefaultDir()); ok {
 		fmt.Println("Artus is already running:", url)
@@ -94,9 +103,19 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
+	a.server.Updates = a.updates
+	if updatedFrom != "" {
+		a.updates.UpdatedFrom(updatedFrom)
+	}
 	url, err := a.listen(*port)
 	if err != nil {
 		return err
+	}
+	updates, stopUpdates := context.WithCancel(context.Background())
+	defer stopUpdates()
+	go a.updates.Run(updates)
+	if updatedFrom != "" {
+		fmt.Printf("Updated from %s.\n", updatedFrom)
 	}
 	fmt.Printf("Artus %s\n  home  %s\n  open  %s\n", version, a.home.Dir, url)
 	if a.home.Config().Model == "" {
@@ -291,4 +310,70 @@ func shutdown(srv *http.Server) {
 	if srv.Shutdown(ctx) != nil {
 		srv.Close()
 	}
+}
+
+// updateCommand looks for a newer release and installs it. A running Artus
+// is asked to do it, so that it restarts into the new version; otherwise the
+// program file is replaced directly.
+func updateCommand(args []string) error {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	check := fs.Bool("check", false, "only report whether a newer version exists")
+	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
+	fs.Parse(args)
+
+	if url, ok := liveServer(store.DefaultDir()); ok {
+		base, token, _ := strings.Cut(url, "/?token=")
+		c := client{base, token}
+		var st update.Status
+		if err := c.call("POST", "/api/update/check", nil, &st); err != nil {
+			return err
+		}
+		if err := reportUpdate(st.Current, st.Latest, st.Available, st.Error); err != nil || !st.Available || *check {
+			return err
+		}
+		if st.Blocked != "" {
+			return errors.New(st.Blocked)
+		}
+		if err := c.call("POST", "/api/update/install", nil, nil); err != nil {
+			return err
+		}
+		fmt.Printf("The running Artus is installing %s and will restart.\n", st.Latest.Version)
+		return nil
+	}
+
+	u := update.New(version)
+	ctx := context.Background()
+	rel, err := u.Latest(ctx)
+	if errors.Is(err, update.ErrNoRelease) {
+		return reportUpdate(version, nil, false, "")
+	}
+	if err != nil {
+		return err
+	}
+	if err := reportUpdate(version, &rel, u.Newer(rel), ""); err != nil || !u.Newer(rel) || *check {
+		return err
+	}
+	if why := u.Blocked(); why != "" {
+		return errors.New(why)
+	}
+	fmt.Println("Downloading and checking…")
+	if err := u.Install(ctx, rel); err != nil {
+		return err
+	}
+	fmt.Printf("Installed %s at %s.\n", rel.Version, u.Exe)
+	return nil
+}
+
+func reportUpdate(current string, latest *update.Release, available bool, problem string) error {
+	switch {
+	case problem != "":
+		return errors.New(problem)
+	case latest == nil:
+		fmt.Printf("Artus %s. No release has been published yet.\n", current)
+	case available:
+		fmt.Printf("Artus %s. Version %s is available: %s\n", current, latest.Version, latest.URL)
+	default:
+		fmt.Printf("Artus %s is up to date (latest release: %s).\n", current, latest.Version)
+	}
+	return nil
 }

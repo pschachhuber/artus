@@ -14,6 +14,7 @@ import (
 	"github.com/pschachhuber/artus/internal/llm"
 	"github.com/pschachhuber/artus/internal/sched"
 	"github.com/pschachhuber/artus/internal/store"
+	"github.com/pschachhuber/artus/internal/update"
 )
 
 type fsEntry struct {
@@ -298,6 +299,10 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Autonomy != "auto" && in.Autonomy != "confirm" {
 		bad(w, "autonomy must be auto or confirm")
+		return
+	}
+	if !contains([]string{update.Off, update.Notify, update.Auto}, in.Update) {
+		bad(w, "update must be off, notify or auto")
 		return
 	}
 	for _, m := range append([]string{in.Model}, in.AllowedModels...) {

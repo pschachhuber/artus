@@ -21,6 +21,7 @@ import (
 	"github.com/pschachhuber/artus/internal/sched"
 	"github.com/pschachhuber/artus/internal/secrets"
 	"github.com/pschachhuber/artus/internal/store"
+	"github.com/pschachhuber/artus/internal/update"
 )
 
 // Server wires the HTTP API to the rest of the harness.
@@ -33,6 +34,7 @@ type Server struct {
 	Browser Browser
 	UI      fs.FS
 	Version string
+	Updates *update.Service // nil when this process does not update itself
 
 	// AgentToken authorises commands the agent runs (`artus browser`, `artus
 	// secret add`). It is scoped to /api/agent/ and changes on every start, so
@@ -186,6 +188,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/changes", s.listChanges)
 	mux.HandleFunc("GET /api/changes/{hash}", s.getChange)
 	mux.HandleFunc("POST /api/changes/{hash}/revert", s.revertChange)
+
+	mux.HandleFunc("GET /api/update", s.updateStatus)
+	mux.HandleFunc("POST /api/update/check", s.updateCheck)
+	mux.HandleFunc("POST /api/update/install", s.updateInstall)
 
 	mux.HandleFunc("GET /api/browser", s.browserStatus)
 	mux.HandleFunc("GET /api/browser/view", s.browserView)

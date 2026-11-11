@@ -269,6 +269,7 @@ type Config struct {
 	AllowedModels []string `json:"allowedModels"`
 	Autonomy      string   `json:"autonomy"` // auto | confirm
 	WebSearch     bool     `json:"webSearch"`
+	Update        string   `json:"update"` // off | notify | auto: what to do about new releases
 	Limits        Limits   `json:"limits"`
 	Context       Context  `json:"context"`
 	Server        Server   `json:"server"`
@@ -310,6 +311,7 @@ func defaultConfig() Config {
 		AllowedModels: []string{},
 		Autonomy:      "auto",
 		WebSearch:     true,
+		Update:        "auto",
 		Limits:        Limits{Subagents: 8, Depth: 1, Turns: 80, TaskTokens: 3_000_000},
 		Context:       Context{CompactAt: 0.7, CompactMaxTokens: 200_000, ToolOutputChars: 30_000, DefaultWindow: 200_000},
 		Server:        Server{Host: "127.0.0.1", Port: 7717},
