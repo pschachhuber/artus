@@ -15,7 +15,6 @@ import (
 type target struct {
 	sess *cdpSession
 	tab  *tab
-	id   string // target id; for an iframe this is also its frame id
 	page bool
 }
 
@@ -48,7 +47,7 @@ func (s *session) onAttached(parent *target, params json.RawMessage) {
 		return
 	}
 	info := ev.TargetInfo
-	tg := &target{id: info.TargetID}
+	tg := &target{}
 	switch {
 	case parent == nil && info.Type == "page" && !strings.HasPrefix(info.URL, "devtools://"):
 		tg.page = true

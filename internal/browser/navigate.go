@@ -132,7 +132,40 @@ func (t *tab) navigate(ctx context.Context, url string, timeout time.Duration) e
 	case res.LoaderID == "":
 		return nil // navigation within the current document
 	}
-	return t.waitParsed(ctx, url, timeout, func() bool { return t.main().committed.After(start) })
+	lost := false
+	err = t.waitParsed(ctx, url, timeout, func() bool {
+		f := t.main()
+		// Should the commit go unreported (see awaitFirstDocument), the
+		// lifecycle events of the new document still give it away.
+		lost = f.loaderID != res.LoaderID && (f.lifecycle[res.LoaderID+"DOMContentLoaded"] || f.lifecycle[res.LoaderID+"networkAlmostIdle"])
+		return lost || f.committed.After(start) && f.loaded("DOMContentLoaded")
+	})
+	if lost && err == nil {
+		err = t.resync(ctx)
+	}
+	return err
+}
+
+// resync reloads the frame tree from the browser after an event that should
+// have updated it was missed.
+func (t *tab) resync(ctx context.Context) error {
+	var tree struct {
+		FrameTree frameTreeNode `json:"frameTree"`
+	}
+	if err := t.sess.call(ctx, "Page.getFrameTree", nil, &tree); err != nil {
+		return err
+	}
+	s := t.s
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if tg := s.targets[t.sess.id]; tg != nil {
+		f := t.frame(tree.FrameTree.Frame.ID)
+		t.setFrameInfo(f, tg, tree.FrameTree.Frame)
+		f.committed, f.pendingNav = time.Now(), false
+		t.navSeq++
+		s.notify()
+	}
+	return nil
 }
 
 // history moves delta entries through the session history.
@@ -173,18 +206,14 @@ func (t *tab) navigateBy(ctx context.Context, url string, timeout time.Duration,
 	if err := t.sess.call(ctx, method, params, nil); err != nil {
 		return err
 	}
-	return t.waitParsed(ctx, url, timeout, func() bool { return t.navSeq != seq })
+	return t.waitParsed(ctx, url, timeout, func() bool { return t.navSeq != seq && t.main().loaded("DOMContentLoaded") })
 }
 
-// waitParsed waits until moved reports that the navigation took effect and
-// the main document reached DOMContentLoaded.
-func (t *tab) waitParsed(ctx context.Context, url string, timeout time.Duration, moved func() bool) error {
+// waitParsed waits until done, called with the main frame present, reports
+// that the navigation took effect and its document has been parsed.
+func (t *tab) waitParsed(ctx context.Context, url string, timeout time.Duration, done func() bool) error {
 	err := t.s.wait(ctx, func() bool {
-		if t.closed || t.dialog != nil {
-			return true
-		}
-		f := t.main()
-		return f != nil && moved() && f.loaded("DOMContentLoaded")
+		return t.closed || t.dialog != nil || (t.main() != nil && done())
 	})
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("navigation to %s timed out after %s: the page started loading but was not parsed in time", url, timeout)

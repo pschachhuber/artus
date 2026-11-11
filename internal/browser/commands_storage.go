@@ -182,36 +182,11 @@ func (s *session) seedLocalStorage(ctx context.Context, origins []originState) e
 	if len(origins) == 0 {
 		return nil
 	}
-	s.mu.Lock()
-	s.helpers++
-	s.mu.Unlock()
-	var created struct {
-		TargetID string `json:"targetId"`
-	}
-	if err := s.root.call(ctx, "Target.createTarget", obj{"url": "about:blank", "background": true}, &created); err != nil {
-		s.mu.Lock()
-		s.helpers--
-		s.mu.Unlock()
-		return err
-	}
-	defer s.root.call(context.WithoutCancel(ctx), "Target.closeTarget", obj{"targetId": created.TargetID}, nil)
-	var t *tab
-	err := s.wait(ctx, func() bool {
-		for _, candidate := range s.helperTabs {
-			if candidate.targetID == created.TargetID {
-				t = candidate
-			}
-		}
-		return t != nil
-	})
+	t, err := s.openTab(ctx, true)
 	if err != nil {
 		return err
 	}
-	select {
-	case <-t.ready:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	defer s.root.call(context.WithoutCancel(ctx), "Target.closeTarget", obj{"targetId": t.targetID}, nil)
 	if err := t.sess.call(ctx, "Fetch.enable", obj{"patterns": []obj{{"urlPattern": "*"}}}, nil); err != nil {
 		return err
 	}

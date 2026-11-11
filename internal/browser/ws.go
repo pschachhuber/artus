@@ -30,7 +30,7 @@ const (
 )
 
 // wsMaxMessage bounds a single reassembled message. DevTools replies carrying
-// screenshots or PDFs are large, but nothing legitimate comes close to this.
+// screenshots are large, but nothing legitimate comes close to this.
 const wsMaxMessage = 512 << 20
 
 const wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"

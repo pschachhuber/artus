@@ -41,7 +41,7 @@ function promptTitle(prompt = '') {
 }
 
 /** A line diff of two short texts (longest common subsequence), removals in red and additions in green. */
-export function diffView(before, after) {
+function diffView(before, after) {
   const a = before ? before.split('\n') : [], b = after.split('\n');
   const lcs = Array.from({length: a.length + 1}, () => new Uint16Array(b.length + 1));
   for (let i = a.length - 1; i >= 0; i--) {

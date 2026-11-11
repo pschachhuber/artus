@@ -128,39 +128,14 @@ type evalResult struct {
 	ExceptionDetails *exceptionDetails `json:"exceptionDetails"`
 }
 
-// world returns the execution context of our isolated world in frame f,
-// creating it when the frame has a new document.
-func (t *tab) world(ctx context.Context, f frameRef) (int, error) {
-	t.s.mu.Lock()
-	if rec := t.frames[f.id]; rec != nil && rec.world != 0 && rec.worldLoader == f.loaderID {
-		id := rec.world
-		t.s.mu.Unlock()
-		return id, nil
-	}
-	t.s.mu.Unlock()
+// world returns the execution context of our isolated world in frame f. The
+// browser creates the world on first use and returns the same one afterwards.
+func world(ctx context.Context, f frameRef) (int, error) {
 	var res struct {
 		ExecutionContextID int `json:"executionContextId"`
 	}
 	err := f.sess.call(ctx, "Page.createIsolatedWorld", obj{"frameId": f.id, "worldName": isolatedWorld}, &res)
-	if err != nil {
-		return 0, err
-	}
-	t.s.mu.Lock()
-	if rec := t.frames[f.id]; rec != nil {
-		rec.world, rec.worldLoader = res.ExecutionContextID, f.loaderID
-	}
-	t.s.mu.Unlock()
-	return res.ExecutionContextID, nil
-}
-
-// forgetWorld drops the cached isolated world of a frame after the browser
-// reported it gone.
-func (t *tab) forgetWorld(f frameRef) {
-	t.s.mu.Lock()
-	if rec := t.frames[f.id]; rec != nil {
-		rec.world = 0
-	}
-	t.s.mu.Unlock()
+	return res.ExecutionContextID, err
 }
 
 // object returns a handle to the element in the isolated world.
@@ -168,27 +143,18 @@ func (el *element) object(ctx context.Context) (string, error) {
 	if el.objectID != "" {
 		return el.objectID, nil
 	}
-	for attempt := 0; ; attempt++ {
-		world, err := el.t.world(ctx, el.frame)
-		if err != nil {
-			return "", err
-		}
-		var res struct {
-			Object struct {
-				ObjectID string `json:"objectId"`
-			} `json:"object"`
-		}
-		err = el.frame.sess.call(ctx, "DOM.resolveNode", obj{"backendNodeId": el.backend, "executionContextId": world}, &res)
-		if cdpErrorContains(err, "context") && attempt == 0 {
-			el.t.forgetWorld(el.frame)
-			continue
-		}
-		if err != nil {
-			return "", err
-		}
-		el.objectID = res.Object.ObjectID
-		return el.objectID, nil
+	id, err := world(ctx, el.frame)
+	if err != nil {
+		return "", err
 	}
+	var res struct {
+		Object struct {
+			ObjectID string `json:"objectId"`
+		} `json:"object"`
+	}
+	err = el.frame.sess.call(ctx, "DOM.resolveNode", obj{"backendNodeId": el.backend, "executionContextId": id}, &res)
+	el.objectID = res.Object.ObjectID
+	return el.objectID, err
 }
 
 // release frees the element's handle in the page.
@@ -217,15 +183,11 @@ func (el *element) call(ctx context.Context, op string, arg, out any) error {
 
 // callFrame runs a document-level helper operation in frame f.
 func (t *tab) callFrame(ctx context.Context, f frameRef, op string, arg, out any) error {
-	world, err := t.world(ctx, f)
+	id, err := world(ctx, f)
 	if err != nil {
 		return err
 	}
-	err = callInjected(ctx, f.sess, obj{"executionContextId": world}, op, arg, out)
-	if cdpErrorContains(err, "context") {
-		t.forgetWorld(f)
-	}
-	return err
+	return callInjected(ctx, f.sess, obj{"executionContextId": id}, op, arg, out)
 }
 
 func callInjected(ctx context.Context, sess *cdpSession, where obj, op string, arg, out any) error {

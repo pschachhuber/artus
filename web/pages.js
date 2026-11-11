@@ -1,8 +1,8 @@
 // pages.js — Tasks, Topics and Skills, plus the two widgets other views
 // share: the model picker and the Markdown file pane.
 
-import {S, bus, watch, h, icon, api, loadTasks, toast, popover, modal, confirmDialog, promptDialog, pageHead, modelName,
-  fmtTokens, fmtDate, fmtUntil, fmtBytes} from './lib.js';
+import {S, bus, watch, h, fill, icon, api, loadTasks, toast, popover, modal, confirmDialog, promptDialog, pageHead, modelName,
+  fmtTokens, fmtDate, fmtUntil} from './lib.js';
 import {renderMarkdown} from './markdown.js';
 
 const enc = path => path.split('/').map(encodeURIComponent).join('/');
@@ -59,33 +59,30 @@ function markdownDoc(text) {
 
 /**
  * A text file from the home: rendered, with an Edit toggle that swaps in a
- * textarea. With `always` it is an editor that never leaves edit mode.
+ * textarea. With `always` it is an editor that never leaves edit mode. The
+ * buttons go into `bar`, which the caller may place in its own header.
  */
-export function docPane(path, {always = false, ondelete, empty = 'This file is empty.'} = {}) {
-  const el = h('div.doc');
-  let content = '', editing = always;
+export function docPane(path, {always = false, ondelete, empty = 'This file is empty.', bar} = {}) {
+  const body = h('div');
+  const el = h('div.doc', bar ? null : bar = h('div.doc-bar'), body);
+  let content = '', editing = always, area = null;
+  const button = (label, name, onclick, cls = '') => h('button.btn' + cls, {type: 'button', onclick}, name ? icon(name, 15) : null, label);
+  const save = async () => {
+    if (!(await api('PUT', fsFile(path), area.value))) return;
+    content = area.value;
+    editing = always;
+    toast('Saved');
+    render();
+  };
   const render = () => {
-    if (!editing) {
-      el.replaceChildren(
-        h('div.doc-bar',
-          h('button.btn', {type: 'button', onclick: () => { editing = true; render(); }}, icon('edit', 15), 'Edit'),
-          ondelete ? h('button.btn', {type: 'button', onclick: ondelete}, icon('trash', 15), 'Delete') : null),
-        !content.trim() ? h('p.muted', empty) : path.endsWith('.md') ? markdownDoc(content) : h('pre.file-text', {tabindex: 0}, content));
-      return;
+    if (editing) {
+      area = h('textarea.editor', {value: content, spellcheck: false, 'aria-label': 'Content of ' + path});
+      bar.replaceChildren(button('Save', '', save, '.primary'), ...always ? [] : [button('Cancel', '', () => { editing = false; render(); })]);
+      body.replaceChildren(area);
+    } else {
+      bar.replaceChildren(button('Edit', 'edit', () => { editing = true; render(); }), ...ondelete ? [button('Delete', 'trash', ondelete)] : []);
+      body.replaceChildren(!content.trim() ? h('p.muted', empty) : path.endsWith('.md') ? markdownDoc(content) : h('pre.file-text', {tabindex: 0}, content));
     }
-    const area = h('textarea.editor', {value: content, spellcheck: false, 'aria-label': 'Content of ' + path});
-    const save = async () => {
-      if (!(await api('PUT', fsFile(path), area.value))) return;
-      content = area.value;
-      editing = always;
-      toast('Saved');
-      render();
-    };
-    el.replaceChildren(
-      h('div.doc-bar',
-        h('button.btn.primary', {type: 'button', onclick: save}, 'Save'),
-        always ? null : h('button.btn', {type: 'button', onclick: () => { editing = false; render(); }}, 'Cancel')),
-      area);
   };
   const load = async () => {
     const res = await api('GET', fsFile(path));
@@ -94,7 +91,8 @@ export function docPane(path, {always = false, ondelete, empty = 'This file is e
     render();
   };
   load();
-  return {el, reload: () => { if (!editing || always && el.querySelector('textarea')?.value === content) load(); }};
+  // A change on disk is shown unless the user has unsaved edits in the textarea.
+  return {el, reload: () => { if (!editing || area.value === content) load(); }};
 }
 
 const statusChip = status => h('span.state.' + status, status);
@@ -129,7 +127,7 @@ function triggerRow(t, withTarget) {
 
 function taskList(el) {
   const cards = h('div.cards'), upcoming = h('ul.rows');
-  el.append(pageHead('Tasks', h('button.btn.primary', {type: 'button', onclick: newTask}, icon('plus', 16), 'New task')),
+  fill(el, pageHead('Tasks', h('button.btn.primary', {type: 'button', onclick: newTask}, icon('plus', 16), 'New task')),
     h('div.page-body',
       h('p.lede', 'Standing jobs Artus runs on its own, on a schedule it keeps itself. Each run starts fresh from the task description and its notes.'),
       cards, h('h2', 'Upcoming'), upcoming));
@@ -170,10 +168,10 @@ async function newTask() {
 
 function taskPage(el, id) {
   const path = '/api/tasks/' + encodeURIComponent(id);
-  const head = h('div.task-head'), descBox = h('div.doc'), rest = h('div');
+  const head = h('div.task-head'), descBar = h('div.doc-bar'), descBox = h('div.doc'), rest = h('div');
   let editing = false;
-  el.append(pageHead(h('nav.crumb', {'aria-label': 'Breadcrumb'}, h('a', {href: '#/tasks'}, icon('back', 14), 'Tasks'))),
-    h('div.page-body', head, h('h2', 'What it does'), descBox, rest));
+  fill(el, pageHead(h('nav.crumb', {'aria-label': 'Breadcrumb'}, h('a', {href: '#/tasks'}, icon('back', 14), 'Tasks'))),
+    h('div.page-body', head, h('div.section-head', h('h2', 'What it does'), descBar), descBox, rest));
 
   const patch = body => api('PATCH', path, body);
   const run = async () => {
@@ -190,25 +188,23 @@ function taskPage(el, id) {
   };
   const describe = t => {
     if (editing) return; // keep what the user is typing
-    descBox.replaceChildren(
-      h('div.doc-bar', h('button.btn', {type: 'button', onclick: () => edit(t)}, icon('edit', 15), 'Edit')),
-      h('div.prose', renderMarkdown(t.description)));
+    descBar.replaceChildren(h('button.btn', {type: 'button', onclick: () => edit(t)}, icon('edit', 15), 'Edit'));
+    descBox.replaceChildren(h('div.prose', renderMarkdown(t.description)));
   };
   const edit = t => {
     editing = true;
     const area = h('textarea.editor', {value: t.description, 'aria-label': 'Task description'});
     const done = () => { editing = false; describe(S.tasks.find(x => x.id === id) || t); };
-    descBox.replaceChildren(
-      h('div.doc-bar',
-        h('button.btn.primary', {type: 'button', onclick: async () => { if (await patch({description: area.value})) done(); }}, 'Save'),
-        h('button.btn', {type: 'button', onclick: done}, 'Cancel')),
-      area);
+    descBar.replaceChildren(
+      h('button.btn.primary', {type: 'button', onclick: async () => { if (await patch({description: area.value})) done(); }}, 'Save'),
+      h('button.btn', {type: 'button', onclick: done}, 'Cancel'));
+    descBox.replaceChildren(area);
     area.focus();
   };
 
   return () => {
     const t = S.tasks.find(x => x.id === id);
-    if (!t) { head.replaceChildren(h('p.muted', 'This task does not exist (any more).')); descBox.replaceChildren(); rest.replaceChildren(); return; }
+    if (!t) { head.replaceChildren(h('p.muted', 'This task does not exist (any more).')); descBar.replaceChildren(); descBox.replaceChildren(); rest.replaceChildren(); return; }
     document.title = t.name + ' — Artus';
     head.replaceChildren(
       h('div.task-title', h('h1', t.name), statusChip(t.status), t.running ? h('span.running', h('span.pulse'), 'running') : null),
@@ -276,35 +272,31 @@ function filesView(root, selected, kind) {
       detail.replaceChildren(h('div.empty', icon(topics ? 'book' : 'spark', 28), h('p', selected ? `There is no such entry in ${kind}.` : INTRO[kind])));
       return;
     }
-    const back = h('a.ghost.only-narrow', {href: '#/' + kind}, icon('back', 14), title);
     const remove = async () => {
       const what = topics ? entry.path : 'skills/' + selected;
       if (!(await confirmDialog(`Delete “${entry.name}”?`, `${what} is removed. You can bring it back from Settings › Changes.`, 'Delete'))) return;
       if (await api('DELETE', fsFile(what))) location.hash = '#/' + kind;
     };
-    const header = h('div.doc-head', back, h('h2', entry.name), h('code.muted', entry.path));
-    if (topics) {
-      pane = docPane(entry.path, {ondelete: remove});
-      detail.replaceChildren(header, pane.el);
-    } else {
-      const files = h('div.file-strip'), holder = h('div');
-      const open = path => {
-        pane = docPane(path, path === entry.path ? {ondelete: remove} : {});
-        holder.replaceChildren(h('code.muted', path), pane.el);
-      };
-      const browse = async dir => {
-        const res = await api('GET', '/api/fs?path=' + encodeURIComponent(dir));
-        if (!res) return;
-        const root = 'skills/' + selected;
-        files.replaceChildren(
-          dir !== root ? h('button.pill', {type: 'button', onclick: () => browse(dir.slice(0, dir.lastIndexOf('/')))}, icon('back', 14), 'Up') : null,
-          ...res.entries.map(f => h('button.pill', {type: 'button', title: f.dir ? 'Folder' : fmtBytes(f.size), onclick: () => f.dir ? browse(f.path) : open(f.path)},
-            icon(f.dir ? 'cube' : 'file', 14), f.name + (f.dir ? '/' : ''))));
-      };
-      detail.replaceChildren(header, files, holder);
-      browse('skills/' + selected);
-      open(entry.path);
-    }
+    const bar = h('div.doc-bar'), where = h('code.muted'), files = h('div.file-strip'), holder = h('div');
+    const open = path => {
+      where.textContent = path;
+      pane = docPane(path, {bar, ondelete: path === entry.path ? remove : null});
+      holder.replaceChildren(pane.el);
+      for (const pill of files.children) pill.setAttribute('aria-pressed', String(pill.title === path));
+    };
+    // A skill is a folder: list what is next to its SKILL.md.
+    const browse = async dir => {
+      const res = await api('GET', '/api/fs?path=' + encodeURIComponent(dir));
+      if (!res) return;
+      const up = dir === 'skills/' + selected ? [] : [h('button.pill', {type: 'button', onclick: () => browse(dir.slice(0, dir.lastIndexOf('/')))}, icon('back', 14), 'Up')];
+      files.replaceChildren(...up, ...res.entries.map(f => h('button.pill', {type: 'button', title: f.path, 'aria-pressed': String(f.path === where.textContent),
+        onclick: () => f.dir ? browse(f.path) : open(f.path)}, icon(f.dir ? 'cube' : 'file', 14), f.name + (f.dir ? '/' : ''))));
+    };
+    detail.replaceChildren(
+      h('div.doc-head', h('a.ghost.only-narrow', {href: '#/' + kind}, icon('back', 14), title), h('h2', entry.name), where, bar),
+      files, holder);
+    if (!topics) browse('skills/' + selected);
+    open(entry.path);
   }
 
   async function newTopic() {

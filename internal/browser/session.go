@@ -263,19 +263,20 @@ func (s *session) start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// A freshly launched browser opens its first tab on its own; give it a
-	// moment before creating one ourselves.
-	grace, stop := context.WithTimeout(ctx, 3*time.Second)
-	err = s.wait(grace, func() bool { return len(s.tabs) > 0 })
-	stop()
-	if err != nil {
-		if _, err := s.newTab(ctx, "about:blank"); err != nil {
-			return err
-		}
+	// A browser we launched opens its first tab on its own; an external one
+	// may have none.
+	grace := 15 * time.Second
+	if s.external {
+		grace = 2 * time.Second
 	}
-	if _, err := s.currentTab(ctx); err != nil {
+	first, stop := context.WithTimeout(ctx, grace)
+	s.wait(first, func() bool { return len(s.tabs) > 0 })
+	stop()
+	t, err := s.currentTab(ctx)
+	if err != nil {
 		return fmt.Errorf("browser tab did not become ready: %w", err)
 	}
+	t.awaitFirstDocument(ctx)
 	// Tabs that were already open are not news.
 	s.mu.Lock()
 	s.opened = nil

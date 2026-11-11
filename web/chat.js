@@ -40,6 +40,10 @@ class ChatView {
     bus.addEventListener('reload', () => this.load(), {signal});
     watch(signal, () => JSON.stringify([needsSetup(), S.config, S.models?.length, S.browser, this.meta]), () => this.refresh());
     this.timer = setInterval(() => this.tick(), 250);
+    // Stay at the bottom when the dock grows (status line, banners) or a picture finishes loading.
+    this.resizes = new ResizeObserver(() => this.follow());
+    this.resizes.observe(this.scroller);
+    this.column.addEventListener('load', () => this.follow(), {capture: true, signal});
     this.load();
   }
 
@@ -49,6 +53,7 @@ class ChatView {
   destroy() {
     this.abort.abort();
     clearInterval(this.timer);
+    this.resizes.disconnect();
     this.transcript?.destroy();
     this.closePanel();
     this.files.forEach(f => f.url && URL.revokeObjectURL(f.url));
@@ -143,8 +148,10 @@ class ChatView {
       this.titleBtn.disabled = !meta;
     }
     const task = meta?.task && S.tasks.find(t => t.id === meta.task);
-    this.crumb.replaceChildren(...meta?.kind === 'task' ? [h('a', {href: '#/tasks'}, 'Tasks'), icon('right', 12), h('a', {href: '#/tasks/' + encodeURIComponent(meta.task)}, task?.name || meta.task)]
-      : meta?.parent ? [h('a', {href: '#/chat/' + meta.parent}, icon('back', 12), S.chats.get(meta.parent)?.title || 'Parent chat')] : []);
+    const crumbs = meta?.kind === 'task'
+      ? [h('a', {href: '#/tasks'}, 'Tasks'), icon('right', 12), h('a', {href: '#/tasks/' + encodeURIComponent(meta.task)}, task?.name || meta.task)]
+      : meta?.parent ? [h('a', {href: '#/chat/' + meta.parent}, icon('back', 12), S.chats.get(meta.parent)?.title || 'Parent chat')] : [];
+    this.crumb.replaceChildren(...crumbs);
 
     const window = meta?.window || S.config.context?.defaultWindow || 200000;
     this.meter.hidden = !meta;
@@ -284,6 +291,10 @@ class ChatView {
 
   onScroll() {
     const s = this.scroller;
+    if (s.clientHeight !== this.viewHeight) { // the dock resized and the browser adjusted the scroll: not the user's doing
+      this.viewHeight = s.clientHeight;
+      return;
+    }
     this.stick = s.scrollHeight - s.scrollTop - s.clientHeight < 60;
     this.jump.hidden = this.stick;
   }
@@ -519,8 +530,8 @@ function browserPanel(el, name, close) {
   const {signal} = abort;
   let session = name || S.browser[0]?.name || 'default';
   let chain = Promise.resolve(), backlog = 0, lastMove = 0;
-  const img = h('img', {alt: 'Live view of the browser page', draggable: false});
-  const view = h('div.browser-view', {tabindex: 0, 'aria-label': 'Browser page. Click it to type into the page; Escape releases the keyboard.'}, img);
+  const img = h('img', {alt: 'Live view of the browser page', draggable: false, onload: () => view.classList.remove('waiting')});
+  const view = h('div.browser-view.waiting', {tabindex: 0, 'aria-label': 'Browser page. Click it to type into the page; Escape releases the keyboard.'}, img);
   const where = h('p.browser-url'), tabs = h('div.tabs');
   const closeBtn = h('button.icon-btn', {type: 'button', title: 'Close', 'aria-label': 'Close the live view', onclick: close}, icon('x'));
   el.replaceChildren(h('header.panel-head', h('h2', 'Browser'), tabs, closeBtn),
@@ -563,6 +574,7 @@ function browserPanel(el, name, close) {
 
   const show = next => {
     session = next;
+    view.classList.add('waiting');
     img.src = '/api/browser/view?session=' + encodeURIComponent(session);
     sync();
   };

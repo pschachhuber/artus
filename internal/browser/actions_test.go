@@ -288,7 +288,7 @@ func TestKeyboard(t *testing.T) {
 	e.run("press", "Control+A")
 	out = e.run("press", "Shift+Tab")
 	mustContain(t, out, "Pressed Shift+Tab", `textbox "Password" [active]`, "]: aB?")
-	mustContain(t, e.run("eval", "window.keys.join(' ')"), `"a Shift+S B+S ? ArrowLeft Control+C a+C Shift+S Tab+S"`)
+	mustContain(t, e.run("eval", "window.keys.join(' ')"), `"a Shift+S B+S ? ArrowLeft Control+C A+C Shift+S Tab+S"`)
 	// Keys scroll the page like they do for a user.
 	e.run("goto", e.site.url("/sticky"))
 	e.run("press", "End")

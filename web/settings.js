@@ -1,6 +1,6 @@
 // settings.js — the Settings page and the first-run setup card.
 
-import {S, bus, chevron, watch, h, icon, api, saveConfig, toast, confirmDialog, promptDialog, pageHead, modelName, fmtDate} from './lib.js';
+import {S, bus, chevron, watch, h, fill, icon, api, saveConfig, toast, confirmDialog, promptDialog, pageHead, modelName, fmtDate} from './lib.js';
 import {modelPicker, docPane} from './pages.js';
 
 const PROVIDERS = {anthropic: 'Anthropic', openai: 'OpenAI', openrouter: 'OpenRouter'};
@@ -73,9 +73,10 @@ function modelsSection(el, signal) {
     model.replaceChildren(modelName(S.config.model), icon('down', 14));
     effort.value = S.config.effort;
     allowed.replaceChildren(...S.config.allowedModels.map(id => h('span.chip', h('span.chip-name', {title: id}, modelName(id)),
-      h('button.chip-x', {type: 'button', 'aria-label': `Remove ${id}`, onclick: () => saveConfig({allowedModels: S.config.allowedModels.filter(m => m !== id)})}, icon('x', 12)))));
+      h('button.chip-x', {type: 'button', 'aria-label': `Remove ${id}`,
+        onclick: () => saveConfig({allowedModels: S.config.allowedModels.filter(m => m !== id)})}, icon('x', 12)))));
   });
-  el.append(
+  fill(el,
     h('h2', 'Provider keys'),
     h('p.muted', 'Keys are stored in your Artus home. Artus only ever shows whether one is set.'),
     S.providers.filter(p => PROVIDERS[p.name]).map(p => providerRow(p.name, signal, true)),
@@ -87,7 +88,7 @@ function modelsSection(el, signal) {
 }
 
 function behaviourSection(el) {
-  const c = S.config;
+  const now = S.config;
   const saved = ok => { if (ok) toast('Saved'); };
   const number = (label, hint, get, patch, attrs) => {
     const input = h('input.input.num', {type: 'number', value: get(S.config), ...attrs, onchange: async () => {
@@ -97,10 +98,10 @@ function behaviourSection(el) {
     return field(label, input, hint);
   };
   const choice = (value, title, text) => h('label.choice',
-    h('input', {type: 'radio', name: 'autonomy', value, checked: c.autonomy === value, onchange: async () => saved(await saveConfig({autonomy: value}))}),
+    h('input', {type: 'radio', name: 'autonomy', value, checked: now.autonomy === value, onchange: async () => saved(await saveConfig({autonomy: value}))}),
     h('span', h('strong', title), h('span.muted', text)));
-  const search = h('input', {type: 'checkbox', checked: c.webSearch, onchange: async () => saved(await saveConfig({webSearch: search.checked}))});
-  el.append(
+  const search = h('input', {type: 'checkbox', checked: now.webSearch, onchange: async () => saved(await saveConfig({webSearch: search.checked}))});
+  fill(el,
     h('h2', 'Autonomy'),
     h('div.choices', {role: 'radiogroup', 'aria-label': 'Autonomy'},
       choice('auto', 'Act on its own', 'Runs commands and edits files without asking.'),
@@ -124,7 +125,7 @@ function behaviourSection(el) {
 }
 
 function instructionsSection(el) {
-  el.append(
+  fill(el,
     h('h2', 'Instructions'),
     h('p.muted', 'Your standing rules. The agent reads them at the start of every conversation and cannot change them.'),
     docPane('instructions.md', {always: true}).el,
@@ -170,7 +171,7 @@ function secretsSection(el, signal) {
   bus.addEventListener('server', e => { if (['secrets', 'config'].includes(e.detail.type)) load(); }, {signal});
   load();
 
-  el.append(
+  fill(el,
     h('h2', 'Secrets'),
     h('p.muted', 'The agent uses secrets by name, such as $GITHUB_TOKEN in a command. Values are injected when a command runs and scrubbed from everything the model reads.'),
     list,
@@ -225,14 +226,15 @@ function changesSection(el, signal) {
   };
   bus.addEventListener('server', e => { if (e.detail.type === 'changes') load(); }, {signal});
   load();
-  el.append(h('h2', 'Changes'),
-    h('p.muted', 'Every edit to memory, topics, skills, tools and tasks is recorded, whether the agent made it or you did. Open one to see what changed, and revert it if it was wrong.'),
+  fill(el, h('h2', 'Changes'),
+    h('p.muted', 'Every edit to memory, topics, skills, tools and tasks is recorded, whether the agent made it or you did. '
+      + 'Open one to see what changed, and revert it if it was wrong.'),
     list);
 }
 
 function aboutSection(el) {
   const keys = [['Ctrl/⌘ K', 'New chat'], ['/', 'Search chats'], ['Enter', 'Send'], ['Shift Enter', 'New line'], ['Esc', 'Close a panel or menu']];
-  el.append(h('h2', 'About'),
+  fill(el, h('h2', 'About'),
     h('dl.facts', h('dt', 'Version'), h('dd', S.version), h('dt', 'Home'), h('dd', h('code', S.home))),
     h('p.muted', 'Everything Artus knows lives in its home folder: chats, memory, topics, skills, tasks and secrets. This interface stores nothing but your theme choice.'),
     h('h2', 'Keyboard'),

@@ -42,6 +42,10 @@ try to work around it: run "handoff <reason>" and continue when it returns.
 Dialogs (alert/confirm/prompt) block the page until "dialog-accept" or
 "dialog-dismiss". Logins persist per session in its profile; "state-save" and
 "state-load" copy cookies and localStorage between sessions.
+
+Actions scroll to their target themselves; to scroll for reading use "press
+PageDown" or "press End". Anything else a page offers is within reach of
+"eval", for example localStorage or the size of the window.
 `
 
 // Help returns the command reference, as printed by `artus browser help`.

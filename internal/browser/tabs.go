@@ -14,10 +14,7 @@ func (s *session) currentTab(ctx context.Context) (*tab, error) {
 	t := s.current
 	s.mu.Unlock()
 	if t == nil {
-		var err error
-		if t, err = s.newTab(ctx, "about:blank"); err != nil {
-			return nil, err
-		}
+		return s.newTab(ctx)
 	}
 	select {
 	case <-t.ready:
@@ -27,23 +24,43 @@ func (s *session) currentTab(ctx context.Context) (*tab, error) {
 	}
 }
 
-// newTab opens a tab, makes it current and waits until it is initialised.
-func (s *session) newTab(ctx context.Context, url string) (*tab, error) {
+// newTab opens a tab and makes it current.
+func (s *session) newTab(ctx context.Context) (*tab, error) {
+	t, err := s.openTab(ctx, false)
+	if err == nil {
+		s.selectTab(ctx, t)
+	}
+	return t, err
+}
+
+// openTab creates a tab on about:blank and waits until it is initialised
+// and its first document is in place. Helper tabs stay out of the tab list.
+func (s *session) openTab(ctx context.Context, helper bool) (*tab, error) {
+	count := func(delta int) {
+		if helper {
+			s.mu.Lock()
+			s.helpers += delta
+			s.mu.Unlock()
+		}
+	}
+	count(1)
 	var created struct {
 		TargetID string `json:"targetId"`
 	}
-	if err := s.root.call(ctx, "Target.createTarget", obj{"url": url}, &created); err != nil {
+	if err := s.root.call(ctx, "Target.createTarget", obj{"url": "about:blank", "background": helper}, &created); err != nil {
+		count(-1)
 		return nil, err
 	}
 	var t *tab
 	err := s.wait(ctx, func() bool {
-		for _, candidate := range s.tabs {
-			if candidate.targetID == created.TargetID {
-				t = candidate
-				return true
+		for _, list := range [][]*tab{s.tabs, s.helperTabs} {
+			for _, candidate := range list {
+				if candidate.targetID == created.TargetID {
+					t = candidate
+				}
 			}
 		}
-		return false
+		return t != nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("new tab did not attach: %w", err)
@@ -53,8 +70,21 @@ func (s *session) newTab(ctx context.Context, url string) (*tab, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	s.selectTab(ctx, t)
+	t.awaitFirstDocument(ctx)
 	return t, nil
+}
+
+// awaitFirstDocument waits, briefly, until the tab shows the document it was
+// created for. A tab can be attached while that first navigation is still
+// under way; commands sent in that window race with it, and Chromium has
+// been seen to then never report the commit of the navigation that follows.
+func (t *tab) awaitFirstDocument(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	t.s.wait(ctx, func() bool {
+		f := t.main()
+		return t.closed || (f != nil && f.url != "" && !f.loading)
+	})
 }
 
 // selectTab makes t the current tab and brings it to the front.
@@ -97,7 +127,7 @@ func cmdTabList(c *command) error {
 }
 
 func cmdTabNew(c *command) error {
-	if _, err := c.s.newTab(c.ctx, "about:blank"); err != nil {
+	if _, err := c.s.newTab(c.ctx); err != nil {
 		return err
 	}
 	c.out.say("Opened a new tab")

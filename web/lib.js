@@ -49,7 +49,15 @@ export function h(spec, props, ...kids) {
     else if (key in el) el[key] = value;
     else if (value !== false) el.setAttribute(key, value === true ? '' : value);
   }
-  el.append(...kids.flat().filter(k => k != null && k !== false));
+  el.append(...clean(kids));
+  return el;
+}
+
+const clean = kids => kids.flat(Infinity).filter(k => k != null && k !== false);
+
+/** Replaces the children of el. Like h(), it accepts nested arrays and skips null and false. */
+export function fill(el, ...kids) {
+  el.replaceChildren(...clean(kids));
   return el;
 }
 
@@ -255,7 +263,7 @@ export function toast(text, kind = 'info') {
   setTimeout(() => el.remove(), kind === 'error' ? 9000 : 4000);
 }
 
-export async function copyText(text) {
+async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
   } catch { // no clipboard API on a plain-HTTP origin: fall back to a selection

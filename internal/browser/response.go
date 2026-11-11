@@ -218,5 +218,5 @@ func (s *session) awaitOpened(ctx context.Context) {
 	s.wait(started, all(func(f *frame) bool { return f.loading || (f.url != "" && f.url != "about:blank") }))
 	loaded, stop := context.WithTimeout(ctx, 3*time.Second)
 	defer stop()
-	s.wait(loaded, all(func(f *frame) bool { return !f.loading }))
+	s.wait(loaded, all(func(f *frame) bool { return !f.loading && (f.loaded("DOMContentLoaded") || f.loaded("load")) }))
 }

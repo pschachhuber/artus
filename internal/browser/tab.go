@@ -59,10 +59,8 @@ type frame struct {
 	requested  time.Time
 	committed  time.Time
 
-	world       int // isolated world context id, valid for worldLoader
-	worldLoader string
-	refSeq      int
-	nodeRefs    map[int]assignedRef
+	refSeq   int
+	nodeRefs map[int]assignedRef
 }
 
 // frameRef is an immutable copy of the frame fields needed outside the lock.
@@ -213,9 +211,19 @@ func (t *tab) url() string {
 	return ""
 }
 
-// urlAndTitle asks the browser process for the tab's URL and title, which
-// works even while page scripts are blocked by a dialog.
+// urlAndTitle returns the tab's URL and title. The page itself is asked for
+// the title; when its scripts are blocked by a dialog or do not answer, the
+// browser process tells what it knows, which can lag behind the page.
 func (t *tab) urlAndTitle(ctx context.Context) (url, title string) {
+	if url = t.url(); url != "" && t.pendingDialog() == nil {
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		var res evalResult
+		err := t.sess.call(ctx, "Runtime.evaluate", obj{"expression": "document.title", "returnByValue": true}, &res)
+		if err == nil && json.Unmarshal(res.Result.Value, &title) == nil {
+			return url, title
+		}
+	}
 	var info struct {
 		TargetInfo struct {
 			URL   string `json:"url"`
@@ -223,7 +231,7 @@ func (t *tab) urlAndTitle(ctx context.Context) (url, title string) {
 		} `json:"targetInfo"`
 	}
 	if err := t.s.root.call(ctx, "Target.getTargetInfo", obj{"targetId": t.targetID}, &info); err != nil {
-		return t.url(), ""
+		return url, ""
 	}
 	url, title = info.TargetInfo.URL, info.TargetInfo.Title
 	// Before a page sets a title the browser reports its URL instead.

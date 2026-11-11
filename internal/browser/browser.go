@@ -44,18 +44,22 @@ type Event struct {
 	// "session_close" or "download".
 	Type    string `json:"type"`
 	Session string `json:"session"`
-	ID      string `json:"id,omitempty"`
-	Reason  string `json:"reason,omitempty"`
-	URL     string `json:"url,omitempty"`
-	Path    string `json:"path,omitempty"`
+	// ID identifies a hand-off; pass it to ResolveHandoff.
+	ID string `json:"id,omitempty"`
+	// Reason is why the user is needed ("handoff") or how the hand-off
+	// ended ("handoff_done"): resolved, timeout, cancelled or closed.
+	Reason string `json:"reason,omitempty"`
+	// URL is the page concerned; Path the file of a finished download.
+	URL  string `json:"url,omitempty"`
+	Path string `json:"path,omitempty"`
 }
 
 // Result is the outcome of a command.
 type Result struct {
 	// Text is the reply for the agent.
 	Text string `json:"text"`
-	// Files lists absolute paths of screenshots, PDFs, snapshots and
-	// downloads the command produced.
+	// Files lists absolute paths of the screenshots, snapshot and state
+	// files and downloads the command produced.
 	Files []string `json:"files,omitempty"`
 }
 
