@@ -137,18 +137,20 @@ func (s *Service) Install(ctx context.Context) error {
 
 	err := s.Updater.Install(ctx, *rel)
 	s.mu.Lock()
-	s.installing = false
 	if err != nil {
-		s.err = "The update was not installed: " + err.Error()
+		s.installing, s.err = false, "The update was not installed: "+err.Error()
 	} else {
-		s.installed = rel.Version
+		s.installed = rel.Version // still "installing" until the restart has happened
 	}
 	s.mu.Unlock()
-	s.changed()
-	if err == nil && s.Restart != nil {
+	if err != nil {
+		s.changed()
+		return err
+	}
+	if s.Restart != nil {
 		s.Restart()
 	}
-	return err
+	return nil
 }
 
 // Run checks shortly after start and then daily, for as long as the setting

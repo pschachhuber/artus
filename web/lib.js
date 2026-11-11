@@ -11,6 +11,7 @@ export const S = {
   modelErrors: {},
   tasks: [], triggers: [],
   browser: [],        // open browser sessions
+  update: null,       // self-update status, null until /api/update has answered
   route: {page: 'chat', id: ''},
 };
 
@@ -188,6 +189,13 @@ export async function loadBrowser() {
   const res = await api('GET', '/api/browser', undefined, {quiet: true});
   if (!res) return;
   S.browser = res.sessions || [];
+  changed();
+}
+
+export async function loadUpdate() {
+  const res = await api('GET', '/api/update', undefined, {quiet: true});
+  if (!res) return;
+  S.update = res;
   changed();
 }
 

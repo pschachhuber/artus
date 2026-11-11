@@ -2,7 +2,7 @@
 // global shortcuts. All state lives on the server: this file fetches a
 // snapshot, then keeps it current from the event stream.
 
-import {S, bus, changed, h, icon, api, applyState, loadModels, loadTasks, loadBrowser, toast, menu, confirmDialog, promptDialog,
+import {S, bus, changed, h, icon, api, applyState, loadModels, loadTasks, loadBrowser, loadUpdate, toast, menu, confirmDialog, promptDialog,
   closeTopLayer, toggleSidebar} from './lib.js';
 import {chatView} from './chat.js';
 import {tasksView, topicsView, skillsView} from './pages.js';
@@ -13,6 +13,7 @@ const main = document.getElementById('main');
 let view = null;   // the mounted page: {destroy(), update?(id)}
 let stream = null; // the EventSource
 let online = true;
+let announced = ''; // the version whose installation was already mentioned
 
 // ---------------------------------------------------------------- server state
 
@@ -31,6 +32,7 @@ async function connect() {
   loadTasks();
   loadBrowser();
   loadModels();
+  loadUpdate().then(announceUpdate);
   stream = new EventSource('/api/events?since=' + state.seq);
   stream.onmessage = e => onServerEvent(JSON.parse(e.data));
   stream.addEventListener('ready', () => setOnline(true));
@@ -43,6 +45,14 @@ async function reconnect() {
   stream?.close();
   await connect();
   if (stream?.readyState !== EventSource.CLOSED) bus.dispatchEvent(new Event('reload'));
+}
+
+/** Says once that Artus has restarted into a new version. */
+function announceUpdate() {
+  const st = S.update;
+  if (!st?.updatedFrom || announced === st.current) return;
+  announced = st.current;
+  toast(`Updated to ${st.current}.`);
 }
 
 function setOnline(now) {
@@ -81,12 +91,19 @@ function onServerEvent(ev) {
     case 'tasks': case 'schedule': refreshTasks(); break;
     case 'config': refreshState(); break;
     case 'secrets': refreshState(); loadModels(true); break;
+    case 'update': {
+      // An install that ends without an error is followed by the restart: it stays "installing" until we reconnect.
+      const restarting = S.update?.installing && !ev.data.installing && !ev.data.error;
+      S.update = restarting ? {...ev.data, installing: true} : ev.data;
+      announceUpdate();
+      break;
+    }
     case 'browser':
       loadBrowser();
       if (ev.data?.type === 'handoff' && S.route.page !== 'chat') toast('The agent is waiting for you in the browser. Open a chat to help.');
       break;
   }
-  if (['chat', 'chat_deleted', 'live'].includes(ev.type)) changed();
+  if (['chat', 'chat_deleted', 'live', 'update'].includes(ev.type)) changed();
   bus.dispatchEvent(new CustomEvent('server', {detail: ev}));
 }
 
@@ -173,6 +190,8 @@ function buildSidebar() {
   const nav = h('nav.side-nav', {'aria-label': 'Sections'});
   const themeBtn = h('button.icon-btn', {type: 'button', onclick: cycleTheme});
   const offline = h('span.offline', {role: 'status'});
+  const update = h('a.update-note', {href: '#/settings/updates', hidden: true});
+  const version = h('span.muted');
 
   function chatRow(chat) {
     const active = S.route.page === 'chat' && S.route.id === chat.id;
@@ -206,6 +225,11 @@ function buildSidebar() {
     themeBtn.title = `${THEMES[t]}. Click to change.`;
     themeBtn.setAttribute('aria-label', themeBtn.title);
     offline.textContent = online ? '' : 'Reconnecting…';
+    version.textContent = S.version;
+    // A quiet pointer to Settings; while reconnecting, that message has the footer to itself.
+    const note = !online ? '' : S.update?.installing ? 'Installing update…' : S.update?.available ? 'Update available' : '';
+    update.hidden = !note;
+    if (update.textContent !== note) update.replaceChildren(h(S.update?.installing ? 'span.spinner' : 'span.dot'), note);
   }
 
   let frame = 0;
@@ -215,7 +239,7 @@ function buildSidebar() {
       h('button.icon-btn', {type: 'button', title: 'Hide sidebar', 'aria-label': 'Hide sidebar', onclick: toggleSidebar}, icon('sidebar'))),
     h('a.btn.new-chat', {href: '#/', onclick: e => { e.preventDefault(); go('#/'); }}, icon('plus', 16), 'New chat', h('kbd', 'Ctrl K')),
     h('div.side-search', icon('search', 15), search), list, nav,
-    h('div.side-foot', themeBtn, offline, h('span.muted', S.version)));
+    h('div.side-foot', themeBtn, offline, update, version));
   render();
   return search;
 }

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"net/http"
+
+	"github.com/pschachhuber/artus/internal/update"
 )
 
 func (s *Server) updateStatus(w http.ResponseWriter, r *http.Request) {
 	if s.Updates == nil {
-		refuse(w, http.StatusNotFound, errors.New("updates are not available in this mode"))
+		reply(w, update.Status{Current: s.Version, Blocked: "This Artus was started for a single command and does not update itself."})
 		return
 	}
 	reply(w, s.Updates.Status())

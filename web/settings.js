@@ -1,6 +1,7 @@
 // settings.js — the Settings page and the first-run setup card.
 
-import {S, bus, chevron, watch, h, fill, icon, api, saveConfig, toast, confirmDialog, promptDialog, pageHead, modelName, fmtDate} from './lib.js';
+import {S, bus, changed, chevron, watch, h, fill, icon, api, saveConfig, toast, confirmDialog, promptDialog, pageHead, modelName, fmtDate} from './lib.js';
+import {renderMarkdown} from './markdown.js';
 import {modelPicker, docPane} from './pages.js';
 
 const PROVIDERS = {anthropic: 'Anthropic', openai: 'OpenAI', openrouter: 'OpenRouter'};
@@ -232,6 +233,82 @@ function changesSection(el, signal) {
     list);
 }
 
+const UPDATE_MODES = [
+  ['off', 'Off', 'Never contacts GitHub on its own. You can still check by hand.'],
+  ['notify', 'Notify', 'Checks once a day and tells you when a new version is out.'],
+  ['auto', 'Automatic', 'Also installs the new version when nothing is running, and restarts.'],
+];
+
+function updatesSection(el, signal) {
+  const status = h('div.update-status');
+  let checking = false, starting = false; // requests of this page that are under way
+  const modes = UPDATE_MODES.map(([value, title, text]) => h('label.choice',
+    h('input', {type: 'radio', name: 'update', value, onchange: async () => { if (await saveConfig({update: value})) toast('Saved'); }}),
+    h('span', h('strong', title), h('span.muted', text))));
+  // Runs the user would lose to a restart: chats and task runs, not the sub-agents inside them.
+  const busy = () => [...S.running].filter(id => S.chats.get(id)?.kind !== 'agent').length;
+
+  const check = async () => {
+    checking = true;
+    render();
+    const res = await api('POST', '/api/update/check');
+    checking = false;
+    if (res) S.update = res;
+    render();
+    changed();
+  };
+  const install = async version => {
+    const runs = busy();
+    const warning = `${runs === 1 ? 'A run is' : runs + ' runs are'} in progress and will be stopped by the restart.`;
+    if (runs && !(await confirmDialog(`Update to ${version} and restart?`, warning, 'Update and restart'))) return;
+    starting = true; // the server's status event takes over from here
+    render();
+    if (await api('POST', '/api/update/install')) return;
+    starting = false;
+    render();
+  };
+  const release = (st, latest) => {
+    const notes = (latest.notes || '').trim();
+    const page = label => /^https?:\/\//i.test(latest.url || '')
+      ? h('a', {href: latest.url, target: '_blank', rel: 'noopener noreferrer'}, label, icon('open', 14)) : null;
+    return h('section.boxed.release', {'aria-label': `Version ${latest.version}`},
+      h('div.release-head', h('h3', `Artus ${latest.version}`),
+        latest.published ? h('span.muted', `Released ${fmtDate(latest.published)}`) : null, page('Release page')),
+      notes ? h('details.notes', {open: notes.length < 700 && notes.split('\n').length < 15},
+        h('summary', chevron(), 'Release notes'), h('div.prose', renderMarkdown(notes))) : null,
+      st.installing ? h('p.running', h('span.spinner'), `Installing ${latest.version}. Artus restarts when it is done and this page reconnects by itself.`)
+        : st.blocked ? h('p.blocked', icon('alert', 16), h('span', st.blocked, ' ', page('Download it from the release page')))
+        : h('button.btn.primary', {type: 'button', disabled: starting, onclick: () => install(latest.version)}, 'Update and restart'));
+  };
+  const render = () => {
+    const st = S.update;
+    if (!st) return fill(status, h('p.muted', 'The update status is not available right now.'));
+    const latest = st.available ? st.latest : null;
+    const headline = latest ? `Version ${latest.version} is available` : st.error ? 'The last check did not succeed'
+      : st.checked ? 'Artus is up to date' : 'Not checked yet';
+    fill(status,
+      st.updatedFrom ? h('p.updated', icon('check', 16), `Updated from ${st.updatedFrom} to ${st.current}.`) : null,
+      h('div.update-row',
+        h('span', h('strong', headline),
+          h('span.muted', `Running ${S.version} · ${st.checked ? 'last checked ' + fmtDate(st.checked) : 'never checked'}`)),
+        h('button.btn', {type: 'button', disabled: checking || st.installing, onclick: check},
+          checking ? h('span.spinner') : icon('retry', 15), checking ? 'Checking…' : 'Check now')),
+      st.error ? h('p.error-text', {role: 'alert'}, st.error) : null,
+      latest ? release(st, latest) : null,
+      !latest && st.blocked ? h('p.muted', st.blocked) : null);
+  };
+  watch(signal, () => JSON.stringify([S.update, S.version, busy()]), () => { starting = false; render(); });
+  watch(signal, () => S.config.update, () => {
+    for (const {firstChild: input} of modes) input.checked = input.value === (S.config.update || 'auto');
+  });
+  fill(el,
+    h('h2', 'Updates'),
+    h('p.muted', 'New versions come from the releases of Artus on GitHub. A download is verified before it replaces the program.'),
+    status,
+    h('h2', 'When to update'),
+    h('div.choices', {role: 'radiogroup', 'aria-label': 'When to update'}, modes));
+}
+
 function aboutSection(el) {
   const keys = [['Ctrl/⌘ K', 'New chat'], ['/', 'Search chats'], ['Enter', 'Send'], ['Shift Enter', 'New line'], ['Esc', 'Close a panel or menu']];
   fill(el, h('h2', 'About'),
@@ -243,7 +320,8 @@ function aboutSection(el) {
 
 const SECTIONS = [
   ['models', 'Models', modelsSection], ['behaviour', 'Behaviour', behaviourSection], ['instructions', 'Instructions', instructionsSection],
-  ['secrets', 'Secrets', secretsSection], ['changes', 'Changes', changesSection], ['about', 'About', aboutSection],
+  ['secrets', 'Secrets', secretsSection], ['changes', 'Changes', changesSection], ['updates', 'Updates', updatesSection],
+  ['about', 'About', aboutSection],
 ];
 
 export function settingsView(root, id) {
@@ -256,6 +334,7 @@ export function settingsView(root, id) {
     abort = new AbortController();
     const [key, title, render] = SECTIONS.find(s => s[0] === current) || SECTIONS[0];
     tabs.replaceChildren(...SECTIONS.map(s => h('a', {href: '#/settings/' + s[0], 'aria-current': s[0] === key ? 'page' : null}, s[1])));
+    tabs.querySelector('[aria-current]').scrollIntoView({block: 'nearest', inline: 'nearest'}); // the row scrolls on a phone
     body.replaceChildren();
     render(body, abort.signal);
     document.title = `${title} — Settings — Artus`;

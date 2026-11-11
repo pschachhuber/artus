@@ -116,6 +116,7 @@ func serve(args []string) error {
 	go a.updates.Run(updates)
 	if updatedFrom != "" {
 		fmt.Printf("Updated from %s.\n", updatedFrom)
+		go a.updates.Check(updates) // so the interface shows a current check, not "never"
 	}
 	fmt.Printf("Artus %s\n  home  %s\n  open  %s\n", version, a.home.Dir, url)
 	if a.home.Config().Model == "" {

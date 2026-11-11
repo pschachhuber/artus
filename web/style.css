@@ -135,6 +135,10 @@ textarea.input { resize: vertical; line-height: 1.5; }
 .side-nav .badge { margin-left: auto; }
 .side-nav .icon { color: var(--text-2); }
 .offline { flex: 1; color: var(--warn); font-size: 12.5px; }
+.update-note { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 8px; border-radius: 9px; color: var(--accent); font-size: 12.5px; text-decoration: none; white-space: nowrap; }
+.update-note:hover { background: var(--hover); }
+.update-note .dot { width: 6px; height: 6px; }
+.update-note .spinner { width: 12px; height: 12px; }
 
 .page-head { display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--bg); }
 .page-head h1, .titles { flex: 1; min-width: 0; }
@@ -220,6 +224,23 @@ select.input { width: auto; }
 .change summary { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 6px 14px; }
 .change-body { display: grid; gap: 10px; justify-items: start; padding: 0 14px 14px; }
 .change-body .diff { justify-self: stretch; }
+.update-status { display: grid; gap: 12px; }
+.update-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; }
+.update-row > span { display: grid; }
+.updated, .blocked, .release .running { display: flex; align-items: flex-start; gap: 8px; font-size: 14px; }
+.updated { color: var(--ok); }
+.updated > .icon, .blocked > .icon, .release .spinner { margin-top: 3px; }
+.blocked { color: var(--text-2); }
+.blocked > .icon { color: var(--warn); }
+.release { display: grid; gap: 12px; justify-items: start; }
+.release > * { min-width: 0; max-width: 100%; }
+.release-head, .notes { justify-self: stretch; }
+.release-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.release-head h3 { font-size: 16px; }
+.release a { display: inline-flex; align-items: center; gap: 4px; font-size: 13.5px; }
+.release-head a { margin-left: auto; }
+.notes summary { display: inline-flex; align-items: center; gap: 4px; min-height: 36px; font-size: 13.5px; color: var(--text-2); }
+.notes .prose { font-size: 14px; }
 .setup { margin: 5vh 0 24px; padding: 24px 26px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); }
 .setup > h2 { font-size: 22px; letter-spacing: -.01em; }
 .steps { display: grid; gap: 22px; margin-top: 20px; padding: 0; list-style: none; counter-reset: step; }

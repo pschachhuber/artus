@@ -242,8 +242,8 @@ func TestServiceStatusAndManualInstall(t *testing.T) {
 	for _, st := range seen {
 		sawInstalling = sawInstalling || st.Installing
 	}
-	if !sawInstalling || svc.Status().Installing {
-		t.Errorf("the interface should see the install start and end: %+v", seen)
+	if !sawInstalling || !svc.Status().Installing {
+		t.Errorf("the interface should see the install start, and no end before the restart: %+v", seen)
 	}
 
 	// A failed check is reported, not fatal.
