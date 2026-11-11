@@ -236,9 +236,48 @@ func TestLockedFilesAndGuard(t *testing.T) {
 	}
 }
 
+// The parts of the shell tool that must behave the same under Git Bash on
+// Windows as under bash elsewhere.
+func TestShellEverywhere(t *testing.T) {
+	if name := shellName(); name != "bash" {
+		t.Skipf("no bash here (%s)", name)
+	}
+	f := newFixture(t)
+	f.e.Secrets.Set("API_TOKEN", "tok_1234567890abcdef")
+	f.mock.Steps = []llm.Step{
+		{Calls: []llm.Block{call("bash", `{"command":"mkdir -p topics/deep && cd topics/deep"}`)}},
+		{Calls: []llm.Block{call("bash", `{"command":"echo token=$API_TOKEN > made-here.txt; cat made-here.txt"}`)}},
+		{Calls: []llm.Block{call("read", `{"path":"made-here.txt"}`)}},
+		{Calls: []llm.Block{call("bash", `{"command":"echo boom >&2; exit 3"}`)}},
+		{Calls: []llm.Block{call("bash", `{"command":"sleep 30","timeout":1}`)}},
+		{Text: "ok"},
+	}
+	started := time.Now()
+	id := f.say("", "run things")
+	if time.Since(started) > 25*time.Second {
+		t.Error("the timeout did not stop the command")
+	}
+	res := f.results(id)
+	if b, err := os.ReadFile(f.e.Home.Path("topics", "deep", "made-here.txt")); err != nil || !strings.Contains(string(b), "tok_1234567890abcdef") {
+		t.Errorf("the working directory did not persist, or the secret was not injected: %q, %v", b, err)
+	}
+	if !strings.Contains(res[1].Text, "token=[secret:API_TOKEN]") {
+		t.Errorf("secret not redacted: %q", res[1].Text)
+	}
+	if res[2].IsError || !strings.Contains(res[2].Text, "[secret:API_TOKEN]") {
+		t.Errorf("the file tools do not share the shell's working directory: %+v", res[2])
+	}
+	if !res[3].IsError || !strings.Contains(res[3].Text, "boom") || !strings.Contains(res[3].Text, "[exit code 3]") {
+		t.Errorf("exit code: %+v", res[3])
+	}
+	if !res[4].IsError || !strings.Contains(res[4].Text, "timeout") {
+		t.Errorf("timeout: %+v", res[4])
+	}
+}
+
 func TestBash(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("needs a POSIX shell")
+		t.Skip("compares POSIX paths")
 	}
 	f := newFixture(t)
 	f.e.Secrets.Set("API_TOKEN", "tok_1234567890abcdef")

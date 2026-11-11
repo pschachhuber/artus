@@ -74,7 +74,7 @@ func (c *Call) path(p string) string {
 			p = filepath.Join(home, strings.TrimPrefix(p, "~"))
 		}
 	}
-	if !filepath.IsAbs(p) {
+	if p = nativePath(p); !filepath.IsAbs(p) {
 		p = filepath.Join(c.e.cwd(c.Chat.ID), p)
 	}
 	return filepath.Clean(p)

@@ -133,7 +133,11 @@ func runBash(ctx context.Context, c *Call) Result {
 		// Remember where the command leaves the shell, even if it calls exit.
 		cwdFile = c.e.Home.Path("tmp", "cwd-"+store.RandomID(4))
 		env = append(env, "ARTUS_CWD_FILE="+cwdFile)
-		script = `trap 'pwd > "$ARTUS_CWD_FILE"' EXIT` + "\n" + in.Command
+		pwd := "pwd"
+		if runtime.GOOS == "windows" {
+			pwd = "{ pwd -W 2>/dev/null || pwd; }" // Git Bash: the Windows form of the path
+		}
+		script = `trap '` + pwd + ` > "$ARTUS_CWD_FILE"' EXIT` + "\n" + in.Command
 		defer os.Remove(cwdFile)
 	}
 
@@ -224,14 +228,19 @@ func runBash(ctx context.Context, c *Call) Result {
 	return res
 }
 
-// nativePath converts the MSYS path Git Bash prints (/c/Users/x) to a
-// Windows path. Elsewhere it returns p unchanged.
+// nativePath converts the MSYS path Git Bash uses (/c/Users/x) to a Windows
+// path. Elsewhere it returns p unchanged.
 func nativePath(p string) string {
-	if runtime.GOOS != "windows" || len(p) < 3 || p[0] != '/' || p[2] != '/' {
+	if runtime.GOOS != "windows" {
 		return p
 	}
-	return strings.ToUpper(p[1:2]) + ":" + filepath.FromSlash(p[2:])
+	if len(p) >= 2 && p[0] == '/' && (len(p) == 2 || p[2] == '/') && isLetter(p[1]) {
+		p = strings.ToUpper(p[1:2]) + ":" + p[2:] + "/"
+	}
+	return filepath.Clean(filepath.FromSlash(p))
 }
+
+func isLetter(c byte) bool { return c|0x20 >= 'a' && c|0x20 <= 'z' }
 
 // capped collects output but keeps only the head and tail of very large
 // streams so a chatty command cannot exhaust memory.
