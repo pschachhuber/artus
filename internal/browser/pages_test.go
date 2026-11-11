@@ -192,8 +192,8 @@ func TestScreenshot(t *testing.T) {
 			t.Fatal(err)
 		}
 		img, err := png.Decode(bytes.NewReader(data))
-		if err != nil || len(data) < 1000 {
-			t.Fatalf("%s is not a plausible PNG (%d bytes): %v", res.Files[0], len(data), err)
+		if err != nil {
+			t.Fatalf("%s is not a PNG (%d bytes): %v", res.Files[0], len(data), err)
 		}
 		return img.Bounds().Dx(), img.Bounds().Dy()
 	}

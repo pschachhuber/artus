@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -71,10 +72,17 @@ func Open(dir string, seed fs.FS) (*Home, error) {
 	if err := h.loadConfig(); err != nil {
 		return nil, err
 	}
+	// Every locked file exists from the first start, so that none can be
+	// slipped in later behind the harness's back.
 	for _, f := range lockedFiles {
-		if b, err := os.ReadFile(h.Path(f)); err == nil {
-			h.guard[f] = b
+		b, err := os.ReadFile(h.Path(f))
+		if errors.Is(err, fs.ErrNotExist) {
+			err = h.writeLocked(f, nil)
 		}
+		if err != nil {
+			return nil, err
+		}
+		h.guard[f] = b
 	}
 	h.initHistory()
 	return h, nil
@@ -112,24 +120,70 @@ func (h *Home) Path(parts ...string) string {
 }
 
 // Rel returns p relative to the home using forward slashes, and whether p is
-// inside the home at all.
+// inside the home at all. Symlinks and short names are resolved first, also
+// for a file that does not exist yet, and locked names come back in the
+// harness's own spelling, so the result can be compared directly.
 func (h *Home) Rel(p string) (string, bool) {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		return "", false
 	}
-	if real, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = real
-	}
-	root := h.Dir
-	if real, err := filepath.EvalSymlinks(root); err == nil {
-		root = real
-	}
-	rel, err := filepath.Rel(root, abs)
+	rel, err := filepath.Rel(resolve(h.Dir, 0), resolve(abs, 0))
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", false
 	}
-	return filepath.ToSlash(rel), true
+	return canonical(filepath.ToSlash(rel)), true
+}
+
+// resolve follows symlinks in the part of p that exists and keeps the rest as
+// written, so a file about to be created resolves like one already there. A
+// dangling link resolves to the file that writing through it would create.
+func resolve(p string, depth int) string {
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		return real
+	}
+	parent := filepath.Dir(p)
+	if parent == p {
+		return p
+	}
+	parent = resolve(parent, depth)
+	if target, err := os.Readlink(filepath.Join(parent, filepath.Base(p))); err == nil && depth < 32 {
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(parent, target)
+		}
+		return resolve(target, depth+1)
+	}
+	return filepath.Join(parent, filepath.Base(p))
+}
+
+// canonical spells locked names the way the harness does, whatever case they
+// were given in, and on Windows drops what the file system ignores (trailing
+// dots and spaces, stream names). "CONFIG.JSON" and "config.json." are then
+// the locked file they would open.
+func canonical(rel string) string {
+	if rel == "." {
+		return rel
+	}
+	parts := strings.Split(rel, "/")
+	if runtime.GOOS == "windows" {
+		for i, part := range parts {
+			part, _, _ = strings.Cut(part, ":")
+			parts[i] = strings.TrimRight(part, ". ")
+		}
+	}
+	for _, d := range lockedDirs {
+		if strings.EqualFold(parts[0], d) {
+			parts[0] = d
+		}
+	}
+	if len(parts) == 1 {
+		for _, f := range lockedFiles {
+			if strings.EqualFold(parts[0], f) {
+				parts[0] = f
+			}
+		}
+	}
+	return strings.Join(parts, "/")
 }
 
 // Locked reports whether the agent is forbidden to write path p.
@@ -139,7 +193,7 @@ func (h *Home) Locked(p string) bool {
 		return false
 	}
 	for _, f := range lockedFiles {
-		if strings.EqualFold(rel, f) {
+		if rel == f {
 			return true
 		}
 	}
