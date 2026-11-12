@@ -29,28 +29,37 @@ A minimal personal agent harness. One small binary gives you a local web interfa
 
 ## Quick start
 
-1. Download the file for your system from the [latest release](https://github.com/pschachhuber/artus/releases/latest):
-
-   | System | File |
-   |---|---|
-   | Windows | `artus_windows_amd64.exe` (or `arm64`) |
-   | macOS, Apple silicon | `artus_darwin_arm64` |
-   | macOS, Intel | `artus_darwin_amd64` |
-   | Linux | `artus_linux_amd64` (or `arm64`) |
-
-2. Run it. On macOS and Linux make it executable first:
+1. Install it. On macOS or Linux, in a terminal:
 
    ```bash
-   chmod +x artus_darwin_arm64
+   curl -fsSL https://raw.githubusercontent.com/pschachhuber/artus/main/install.sh | sh
    ```
 
-   ```bash
-   ./artus_darwin_arm64
+   On Windows, in PowerShell:
+
+   ```powershell
+   irm https://raw.githubusercontent.com/pschachhuber/artus/main/install.ps1 | iex
    ```
 
-   The binaries are not code-signed, so macOS and Windows ask you to confirm the first run. You can check a download against `checksums.txt` from the same release.
+   The script downloads the program for your system from the [latest release](https://github.com/pschachhuber/artus/releases/latest), checks it against the release's `checksums.txt` and puts it in `~/.local/bin`, or on Windows in `%LOCALAPPDATA%\Programs\Artus`, which it adds to your PATH. Both are folders of your own, so Artus can update itself there. Set `ARTUS_INSTALL_DIR` to install elsewhere, or `ARTUS_VERSION` (such as `v0.1.0`) for a given release.
+
+2. Run `artus`. If the folder is not on your PATH, the script prints the full path to use.
 
 3. Artus prints a link and opens it in your browser. Paste an API key for Anthropic, OpenAI or OpenRouter, pick a model, and start a chat.
+
+**Downloading by hand.** Take the file for your system from the [latest release](https://github.com/pschachhuber/artus/releases/latest), check it against `checksums.txt` from the same release, and run it. On macOS and Linux make it executable first (`chmod +x artus_darwin_arm64`, then `./artus_darwin_arm64`).
+
+| System | File |
+|---|---|
+| Windows | `artus_windows_amd64.exe` (or `arm64`) |
+| macOS, Apple silicon | `artus_darwin_arm64` |
+| macOS, Intel | `artus_darwin_amd64` |
+| Linux | `artus_linux_amd64` (or `arm64`) |
+
+A browser marks what it saves as downloaded from the internet, and the system checks a marked program on its first run. The install script's download carries no mark, so none of this applies to it.
+
+- **macOS** opens a program signed and notarized by Apple. The release notes say whether a release's macOS binaries are (see [Signing](#signing)). For one that is not, macOS says "Apple could not verify “artus_darwin_arm64” is free of malware". Click **Done**, open **System Settings › Privacy & Security**, click **Open Anyway** next to the message about Artus, and run it again. Or remove the mark in a terminal: `xattr -d com.apple.quarantine artus_darwin_arm64`.
+- **Windows** SmartScreen says "Windows protected your PC", because the binaries are not code-signed. Click **More info**, then **Run anyway**.
 
 **Requirements.** `git` and `bash` should be on the machine: the agent's shell tool uses bash, and the change log uses git. On Windows, install [Git for Windows](https://git-scm.com/download/win), which provides both. A Chromium-family browser is used if present and downloaded automatically if not.
 
@@ -313,6 +322,29 @@ To try the interface without a key, start with `ARTUS_MOCK=1` and choose the mod
 - The version is the next patch after the latest tag (`v0.1.4` → `v0.1.5`). Write `[minor]` or `[major]` in a commit message to raise that part instead.
 - A push that changes nothing in the program (README, licence, CI files, tests) is not released.
 - To release by hand, run the Release workflow from the Actions tab and pick the bump, or push a tag such as `v1.2.3` to release exactly that version.
+
+### Signing
+
+macOS opens a downloaded program without asking only if it is signed with a Developer ID and notarized by Apple. The release does both when the repository has the secrets below (**Settings › Secrets and variables › Actions**); without them the macOS binaries are published unsigned, and the release notes say so. It runs on the Linux runner with GoReleaser's built-in signing, so no Mac is involved, and the checksums cover the signed files. Set all of them or none: a partial set stops the release before anything is tagged.
+
+| Secret | Value |
+|---|---|
+| `MACOS_SIGN_P12` | The Developer ID Application certificate with its private key, as a `.p12` file, base64-encoded |
+| `MACOS_SIGN_PASSWORD` | The password of that `.p12`, if it has one |
+| `MACOS_NOTARY_KEY` | An App Store Connect API key (`.p8` file), base64-encoded |
+| `MACOS_NOTARY_KEY_ID` | That key's ID |
+| `MACOS_NOTARY_ISSUER_ID` | The issuer ID shown above the list of keys |
+
+To get them:
+
+1. Join the [Apple Developer Program](https://developer.apple.com/programs/) (99 USD a year).
+2. On a Mac, in **Xcode › Settings › Accounts › Manage Certificates**, add a **Developer ID Application** certificate (only the account holder can create one). In **Keychain Access**, find it under **My Certificates**, export it with its key as `artus.p12` and choose a password. Then `base64 -i artus.p12 | tr -d '\n' | pbcopy` copies the value for `MACOS_SIGN_P12`.
+3. In [App Store Connect](https://appstoreconnect.apple.com/access/integrations/api) under **Users and Access › Integrations › App Store Connect API › Team Keys**, generate a key with the **Developer** role (the first time, the account holder has to request access there). Download the `.p8` (it can be downloaded only once), and note its key ID and the issuer ID. `base64 -i AuthKey_XXXXXXXXXX.p8 | tr -d '\n' | pbcopy` copies the value for `MACOS_NOTARY_KEY`.
+4. Add the five secrets, then run the Release workflow by hand to publish a signed release.
+
+`codesign -dv --verbose=2 artus_darwin_arm64` on a Mac shows `Authority=Developer ID Application: …` for a signed binary. A bare program cannot carry its notarization ticket inside it, so on the first run macOS asks Apple whether it is notarized, which needs a network connection.
+
+Windows SmartScreen works the same way: its prompt goes away only for programs signed with a code-signing certificate that has built up reputation. The Windows binaries are not signed yet.
 
 ## License
 

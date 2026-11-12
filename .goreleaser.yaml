@@ -20,6 +20,27 @@ archives:
   - formats: [binary]
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
 
+# Signs the macOS binaries with a Developer ID and has Apple notarize them, so
+# Gatekeeper opens them instead of saying "Apple could not verify …". This runs
+# on the Linux runner (GoReleaser's built-in quill), before the checksums are
+# taken. It stays off until the MACOS_* secrets exist: see "Signing" in the
+# README. A rejected binary fails the release; one Apple has not judged within
+# the timeout is published signed, and Apple finishes notarizing it on its own.
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      sign:
+        certificate: "{{ .Env.MACOS_SIGN_P12 }}"
+        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+      notarize:
+        issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
+        key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
+        key: "{{ .Env.MACOS_NOTARY_KEY }}"
+        wait: true
+        # The API token lives 2 minutes longer than this, and Apple refuses
+        # tokens that live longer than 20.
+        timeout: 15m
+
 checksum:
   name_template: checksums.txt
 
@@ -35,5 +56,9 @@ release:
   # A re-run after a failed upload replaces what the first attempt left.
   replace_existing_artifacts: true
   footer: |
-    **Install:** download the file for your system, make it executable on macOS and Linux (`chmod +x artus_*`), and run it.
-    The binaries are not code-signed: on first run macOS and Windows will ask you to confirm. Verify a download against `checksums.txt`.
+    **Install:** on macOS and Linux run `curl -fsSL https://raw.githubusercontent.com/pschachhuber/artus/main/install.sh | sh`, on Windows run `irm https://raw.githubusercontent.com/pschachhuber/artus/main/install.ps1 | iex` in PowerShell. Or download the file for your system, make it executable on macOS and Linux (`chmod +x artus_*`), and run it.
+    {{ if isEnvSet "MACOS_SIGN_P12" -}}
+    The macOS binaries are signed with a Developer ID and notarized by Apple. The Windows binaries are not code-signed, so Windows asks you to confirm the first run of a downloaded file.
+    {{- else -}}
+    The binaries are not code-signed, so macOS and Windows ask you to confirm the first run of a downloaded file; the install commands do not trigger this.
+    {{- end }} Verify a download against `checksums.txt`.

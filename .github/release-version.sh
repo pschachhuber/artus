@@ -5,7 +5,8 @@
 #
 #   BUMP     auto (default), patch, minor or major
 #   FROM_CI  true when called after CI on a push to main: a push that changes
-#            nothing in the program (README, CI files, tests) is not released
+#            nothing in the program (README, CI files, tests, install scripts)
+#            is not released
 #
 # auto raises the patch number, or the minor or major number when a commit
 # message since the last release contains [minor] or [major]. The first
@@ -51,6 +52,7 @@ fi
 
 if [[ $FROM_CI == true ]] && git diff --quiet "$latest" HEAD -- . \
 	':(exclude)README.md' ':(exclude)LICENSE' ':(exclude).gitignore' \
+	':(exclude)install.sh' ':(exclude)install.ps1' \
 	':(exclude).github' ':(glob,exclude)**/*_test.go' ':(glob,exclude)**/testdata/**'; then
 	echo "Nothing in the program changed since $latest"
 	release ""

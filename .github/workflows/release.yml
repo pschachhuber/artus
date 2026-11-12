@@ -55,6 +55,25 @@ jobs:
       - name: Test
         if: steps.version.outputs.tag != '' && !inputs.from_ci
         run: go test ./...
+      # Signing the macOS binaries is optional: without the MACOS_* secrets
+      # they are published unsigned. Half a set is a mistake, and stops here
+      # before anything is tagged. Only whether each secret exists is read.
+      - name: Signing
+        if: steps.version.outputs.tag != ''
+        env:
+          P12: ${{ secrets.MACOS_SIGN_P12 != '' }}
+          ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER_ID != '' }}
+          KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID != '' }}
+          KEY: ${{ secrets.MACOS_NOTARY_KEY != '' }}
+        run: |
+          case "$P12 $ISSUER $KEY_ID $KEY" in
+          "true true true true") echo "The macOS binaries will be signed and notarized." ;;
+          "false false false false") echo "::notice::The macOS binaries are published unsigned: the MACOS_* secrets are not set (see Signing in the README)." ;;
+          *)
+            echo "::error::Set all of MACOS_SIGN_P12, MACOS_NOTARY_ISSUER_ID, MACOS_NOTARY_KEY_ID and MACOS_NOTARY_KEY, or none of them."
+            exit 1
+            ;;
+          esac
       - name: Tag
         if: steps.version.outputs.tag != '' && !startsWith(github.ref, 'refs/tags/')
         env:
@@ -72,3 +91,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.tag }}
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
