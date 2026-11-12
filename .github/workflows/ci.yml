@@ -77,11 +77,12 @@ jobs:
           fi
 
   # Whether the macOS tests let a release through. When GitHub has no macOS
-  # runner, test-macos ends after a while without running a step: it shows
-  # as cancelled, but its result reads as a failure, the same as a failing
-  # test. So this asks which it was: tests that passed or never started let
-  # the release go ahead on the Linux and Windows results, tests that ran and
-  # did not pass stop it. Runs on pull requests too, so it stays tested.
+  # runner, test-macos ends after 15 minutes without running a step: it shows
+  # as cancelled, but its result reads "abandoned", a value GitHub does not
+  # document. Rather than rely on it, this asks whether the job ran any step:
+  # tests that passed or never started let the release go ahead on the Linux
+  # and Windows results, tests that ran and did not pass stop it. Runs on
+  # pull requests too, so it stays tested.
   macos-gate:
     needs: [test, test-macos]
     if: always() && needs.test.result == 'success'
