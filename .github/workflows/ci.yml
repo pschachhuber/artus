@@ -50,9 +50,8 @@ jobs:
           $path = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
           if (@($path | Where-Object { $_ -eq $env:ARTUS_INSTALL_DIR }).Count -ne 1) { throw "PATH holds the folder not exactly once: $path" }
 
-  # A job of its own because GitHub at times has no macOS runner to give: the
-  # job is then cancelled after a while, and that alone does not hold back a
-  # release. A failing macOS test does.
+  # A job of its own because GitHub at times has no macOS runner to give.
+  # macos-gate below tells that apart from a failing test.
   test-macos:
     runs-on: macos-latest
     steps:
@@ -77,13 +76,43 @@ jobs:
             exit 1
           fi
 
+  # Whether the macOS tests let a release through. When GitHub has no macOS
+  # runner, test-macos ends after a while without running a step: it shows
+  # as cancelled, but its result reads as a failure, the same as a failing
+  # test. So this asks which it was: tests that passed or never started let
+  # the release go ahead on the Linux and Windows results, tests that ran and
+  # did not pass stop it. Runs on pull requests too, so it stays tested.
+  macos-gate:
+    needs: [test, test-macos]
+    if: always() && needs.test.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: macOS tests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ needs.test-macos.result }}
+        run: |
+          steps=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest" \
+            --jq '.jobs[] | select(.name == "test-macos") | .steps | length')
+          echo "test-macos: result $RESULT, steps run: ${steps:-job not found}"
+          if [[ $RESULT == success ]]; then
+            exit 0
+          elif [[ $steps == 0 ]]; then
+            echo "::notice::GitHub had no macOS runner, so the macOS tests did not run. A release goes ahead on the Linux and Windows results."
+            exit 0
+          fi
+          echo "::error::The macOS tests ran and did not pass ($RESULT)."
+          exit 1
+
   # A push to main that passes is published as a release.
   release:
-    needs: [test, test-macos]
+    needs: [macos-gate]
+    # needs.test passed, or macos-gate would not have run.
     if: >-
       !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' &&
-      needs.test.result == 'success' &&
-      (needs.test-macos.result == 'success' || needs.test-macos.result == 'cancelled')
+      needs.macos-gate.result == 'success'
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml
