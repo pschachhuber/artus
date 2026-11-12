@@ -308,7 +308,7 @@ To try the interface without a key, start with `ARTUS_MOCK=1` and choose the mod
 | `web` | The interface |
 | `defaults` | The base system prompt and the default task |
 
-**Releases are automatic.** Every push to `main` that passes CI on Linux, macOS and Windows is tagged with the next version and published as a GitHub Release by [GoReleaser](https://goreleaser.com) (`.github/workflows/release.yml`). Installed copies then update themselves according to their update setting.
+**Releases are automatic.** Every push to `main` that passes CI on Linux, macOS and Windows is tagged with the next version and published as a GitHub Release by [GoReleaser](https://goreleaser.com) (`.github/workflows/release.yml`). Installed copies then update themselves according to their update setting. If GitHub has no macOS machine free for the tests, the release goes ahead on the Linux and Windows results; a failing macOS test still stops it.
 
 - The version is the next patch after the latest tag (`v0.1.4` → `v0.1.5`). Write `[minor]` or `[major]` in a commit message to raise that part instead.
 - A push that changes nothing in the program (README, licence, CI files, tests) is not released.

@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -30,10 +30,30 @@ jobs:
       - name: Build
         run: go build ./cmd/artus
 
-  # A push to main that passes on every platform is published as a release.
+  # A job of its own because GitHub at times has no macOS runner to give: the
+  # job is then cancelled after a while, and that alone does not hold back a
+  # release. A failing macOS test does.
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+      - name: Build
+        run: go build ./cmd/artus
+
+  # A push to main that passes is published as a release.
   release:
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, test-macos]
+    if: >-
+      !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.test.result == 'success' &&
+      (needs.test-macos.result == 'success' || needs.test-macos.result == 'cancelled')
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml
