@@ -1,4 +1,4 @@
-# Builds the release binaries. Run by .github/workflows/release.yml on a version tag.
+# Builds the release binaries. Run by .github/workflows/release.yml.
 version: 2
 project_name: artus
 
@@ -32,6 +32,8 @@ changelog:
       - "^ci:"
 
 release:
+  # A re-run after a failed upload replaces what the first attempt left.
+  replace_existing_artifacts: true
   footer: |
     **Install:** download the file for your system, make it executable on macOS and Linux (`chmod +x artus_*`), and run it.
     The binaries are not code-signed: on first run macOS and Windows will ask you to confirm. Verify a download against `checksums.txt`.

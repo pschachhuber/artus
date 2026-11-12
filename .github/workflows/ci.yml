@@ -29,3 +29,13 @@ jobs:
         run: go test ./...
       - name: Build
         run: go build ./cmd/artus
+
+  # A push to main that passes on every platform is published as a release.
+  release:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      from_ci: true

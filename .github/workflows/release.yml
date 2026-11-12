@@ -1,7 +1,30 @@
 name: Release
 
-# Pushing a tag such as v0.1.0 builds every platform and publishes a GitHub Release.
+# Publishes a GitHub Release with the binaries for every platform.
+#
+# - Every push to main that passes CI is released automatically (ci.yml calls
+#   this workflow). The version is the next patch after the latest v* tag, or
+#   the next minor or major when a commit message says [minor] or [major].
+#   Pushes that change nothing in the program (README, CI, tests) are skipped.
+# - Run this workflow by hand (Actions › Release › Run workflow) to release
+#   now and choose the bump yourself.
+# - Push a tag such as v1.2.3 to release exactly that version.
 on:
+  workflow_call:
+    inputs:
+      from_ci:
+        type: boolean
+        default: false
+      bump:
+        type: string
+        default: auto
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the version to raise
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
   push:
     tags: ["v*"]
 
@@ -11,6 +34,10 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # One release at a time, so two pushes cannot claim the same version.
+    concurrency:
+      group: release
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -18,11 +45,30 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - name: Version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUMP: ${{ inputs.bump || 'auto' }}
+          FROM_CI: ${{ inputs.from_ci && 'true' || 'false' }}
+        run: bash .github/release-version.sh
       - name: Test
+        if: steps.version.outputs.tag != '' && !inputs.from_ci
         run: go test ./...
+      - name: Tag
+        if: steps.version.outputs.tag != '' && !startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || git tag -a "$TAG" -m "$TAG"
+          git push origin "refs/tags/$TAG"
       - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        if: steps.version.outputs.tag != ''
         with:
           version: v2.20.1
           args: release --clean
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.tag }}

@@ -308,7 +308,11 @@ To try the interface without a key, start with `ARTUS_MOCK=1` and choose the mod
 | `web` | The interface |
 | `defaults` | The base system prompt and the default task |
 
-**Releases.** Pushing a tag such as `v0.1.0` runs [GoReleaser](https://goreleaser.com) through `.github/workflows/release.yml` and publishes the binaries and checksums as a GitHub Release.
+**Releases are automatic.** Every push to `main` that passes CI on Linux, macOS and Windows is tagged with the next version and published as a GitHub Release by [GoReleaser](https://goreleaser.com) (`.github/workflows/release.yml`). Installed copies then update themselves according to their update setting.
+
+- The version is the next patch after the latest tag (`v0.1.4` → `v0.1.5`). Write `[minor]` or `[major]` in a commit message to raise that part instead.
+- A push that changes nothing in the program (README, licence, CI files, tests) is not released.
+- To release by hand, run the Release workflow from the Actions tab and pick the bump, or push a tag such as `v1.2.3` to release exactly that version.
 
 ## License
 
