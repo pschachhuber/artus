@@ -29,6 +29,26 @@ jobs:
         run: go test ./...
       - name: Build
         run: go build ./cmd/artus
+      # The install scripts against the latest release, the second run over
+      # the first install.
+      - name: Install script
+        if: runner.os == 'Linux'
+        run: |
+          ARTUS_INSTALL_DIR="$RUNNER_TEMP/artus" sh install.sh
+          ARTUS_INSTALL_DIR="$RUNNER_TEMP/artus" sh install.sh
+          "$RUNNER_TEMP/artus/artus" version
+      - name: Install script
+        if: runner.os == 'Windows'
+        # Windows PowerShell 5.1, as most people run it, the way they run it.
+        shell: powershell
+        run: |
+          $env:ARTUS_INSTALL_DIR = "$env:RUNNER_TEMP\artus"
+          Get-Content -Raw install.ps1 | Invoke-Expression
+          Get-Content -Raw install.ps1 | Invoke-Expression
+          artus version
+          if ($LASTEXITCODE) { exit 1 }
+          $path = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
+          if (@($path | Where-Object { $_ -eq $env:ARTUS_INSTALL_DIR }).Count -ne 1) { throw "PATH holds the folder not exactly once: $path" }
 
   # A job of its own because GitHub at times has no macOS runner to give: the
   # job is then cancelled after a while, and that alone does not hold back a
@@ -46,6 +66,16 @@ jobs:
         run: go test ./...
       - name: Build
         run: go build ./cmd/artus
+      # Also shows that the installed program is not quarantined, so
+      # Gatekeeper does not stop it.
+      - name: Install script
+        run: |
+          ARTUS_INSTALL_DIR="$RUNNER_TEMP/artus" sh install.sh
+          "$RUNNER_TEMP/artus/artus" version
+          if xattr -p com.apple.quarantine "$RUNNER_TEMP/artus/artus" 2>/dev/null; then
+            echo "::error::The installed program is quarantined"
+            exit 1
+          fi
 
   # A push to main that passes is published as a release.
   release:
@@ -57,5 +87,7 @@ jobs:
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml
+    # The signing secrets; a called workflow sees none it is not given.
+    secrets: inherit
     with:
       from_ci: true
