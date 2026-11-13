@@ -212,7 +212,7 @@ Requests go straight from your machine to the provider. Apart from those, Artus 
 
 A single page served from the binary: no framework, no build step, no external requests.
 
-- **Chats:** streaming text and reasoning, live tool cards with output and diffs, sub-agent lanes, attachments by button, paste or drop, message queueing while the agent works, fork and retry.
+- **Chats:** streaming text and reasoning, each run of steps folded into one line that opens to its tool cards with live output and diffs, sub-agent lanes, attachments by button, paste or drop, message queueing while the agent works, fork and retry.
 - **Context:** a meter in each chat, and an inspector showing what fills the context, which files are loaded, cache use, and the exact request that would be sent next.
 - **Tasks, Topics, Skills:** browse, edit, run, pause.
 - **Settings:** keys, default model and effort, the allowlist, limits, your instructions, secrets, and the change log with revert.
@@ -301,7 +301,7 @@ The provider clients can also be tested against the real APIs. One OpenRouter ke
 ARTUS_LIVE=1 OPENROUTER_API_KEY=... go test ./internal/llm -run Live -v
 ```
 
-To try the interface without a key, start with `ARTUS_MOCK=1` and choose the model `mock/echo`.
+To try the interface without a key, start with `ARTUS_MOCK=1` and choose the model `mock/echo`. It echoes what you write; the messages `demo`, `demo slow` and `demo agents` walk through runs of several steps.
 
 | Package | Role |
 |---|---|

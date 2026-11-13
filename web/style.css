@@ -338,6 +338,30 @@ details.harness { display: block; }
 .timer { font-variant-numeric: tabular-nums; }
 .thinking-text { max-height: 280px; margin: 2px 0 8px 6px; padding: 2px 0 2px 14px; border-left: 2px solid var(--border); font-size: 13.5px; color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto; }
 
+/* A work group: the steps between two pieces of text, folded into one line. */
+.work { min-width: 0; }
+.work > summary { display: flex; align-items: center; gap: 6px; min-height: 34px; font-size: 13.5px; color: var(--text-3); }
+.work > summary:hover { color: var(--text-2); }
+.work-mark { flex: none; display: inline-flex; }
+.work-label { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-digest { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-failed, .work-time { flex: none; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.work-failed { color: var(--err); }
+.work-mark:empty, .work-digest:empty, .work-failed:empty, .work-time:empty { display: none; }
+.work-failed::before, .work-time::before { content: "·"; margin-right: 2px; color: var(--text-3); }
+.work[data-state="running"] .work-label, .work[data-state="waiting"] .work-label { color: var(--text-2); font-weight: 500; }
+.work-digest.cmd { font-family: var(--mono); font-size: 12.5px; }
+.work[data-state="thinking"] .work-label { background: linear-gradient(90deg, var(--text-3) 35%, var(--text) 50%, var(--text-3) 65%) 0 0 / 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.8s linear infinite; }
+.work[data-state="thinking"] .work-time::before { content: none; }
+.work-body { display: grid; gap: 6px; min-width: 0; margin: 2px 0 10px 6px; padding-left: 14px; border-left: 2px solid var(--border); }
+.work-body > * { min-width: 0; }
+/* Thoughts with no tools beside them show their text at once, as one toggle. */
+.work.solo > .work-body { display: block; margin: 0; padding: 0; border: 0; }
+.work.solo .thinking > summary { display: none; }
+@media (max-width: 760px), (pointer: coarse) {
+  .work > summary, .work-body .thinking > summary { min-height: 40px; }
+}
+
 .tool { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); min-width: 0; }
 .tool > summary { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 12px; font-size: 13.5px; }
 .tool > summary > .icon { color: var(--text-3); }

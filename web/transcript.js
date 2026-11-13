@@ -1,5 +1,6 @@
 // transcript.js — turns the records and live events of one chat into DOM:
-// messages, thinking, tool cards, sub-agent lanes and the reply in progress.
+// messages, work groups (the thinking, tool cards and sub-agent lanes between
+// them, folded into one line each) and the reply in progress.
 
 import {S, bus, chevron, h, icon, api, changed, fmtDuration, fmtElapsed, fmtBytes, fmtTokens, fileUrl, copyButton, lightbox, liveLabel, modelLabel} from './lib.js';
 import {renderMarkdown, LiveMarkdown, plain} from './markdown.js';
@@ -9,6 +10,7 @@ const TOOL_ICONS = {
   web_fetch: 'globe', agent: 'bot', schedule: 'clock', ask_secret: 'key',
 };
 const STATE_LABELS = {running: 'Running', done: 'Finished', ok: 'Finished', error: 'Failed', stopped: 'Stopped before it finished'};
+const STEP_NAMES = {agent: 'sub-agent', web_search: 'web search'}; // what a work group's summary calls a step
 
 /** Reads tool arguments that may still be streaming in as half a JSON object. */
 function partialArgs(text) {
@@ -100,21 +102,138 @@ function harnessNote(text) {
     h('div.prose', renderMarkdown(tagged ? more : clean)));
 }
 
-const thinkingBlock = (text, ms) => h('details.thinking',
+/** "bash ×3, read, edit": what was used and how often, in order of first use. */
+function tally(names) {
+  const counts = new Map();
+  for (const n of names) counts.set(n, (counts.get(n) || 0) + 1);
+  return [...counts].map(([n, k]) => k > 1 ? `${n} ×${k}` : n).join(', ');
+}
+
+// ---------------------------------------------------------------- work groups
+
+const thinkStep = (text, ms) => ({kind: 'think', ms, el: h('details.thinking',
   h('summary', chevron(), ms ? `Thought for ${fmtDuration(ms)}` : 'Thought'),
-  h('div.thinking-text', text));
+  h('div.thinking-text', text))});
+
+const searchStep = text => ({kind: 'search', name: 'web_search', summary: text || '',
+  el: h('div.searched', icon('globe', 14), text ? 'Searched: ' + text : 'Searched the web')});
+
+/**
+ * A run of steps (thinking, tool calls, searches) with no text between them,
+ * folded into one line of the chat. It opens only when the user opens it; the
+ * line says what is happening while the run is in it and what was done after.
+ */
+class Work {
+  constructor(owner) {
+    Object.assign(this, {owner, steps: [], ms: 0, solo: true, shown: ''});
+    this.mark = h('span.work-mark');
+    this.label = h('span.work-label');
+    this.digest = h('span.work-digest');
+    this.failed = h('span.work-failed');
+    this.time = h('span.work-time');
+    this.body = h('div.work-body');
+    this.el = h('details.work', {hidden: true},
+      h('summary', chevron(), this.mark, this.label, this.digest, this.failed, this.time), this.body);
+  }
+
+  /** Appends a step. Sub-agents started together (the same batch) sit side by side. */
+  add(step, batch) {
+    step.work = this;
+    if (step.card) step.card.work = this;
+    this.steps.push(step);
+    if (step.card instanceof Lane) {
+      let lanes = this.body.lastElementChild;
+      if (!lanes?.matches('.lanes') || lanes.batch !== batch) lanes = this.body.appendChild(Object.assign(h('div.lanes'), {batch}));
+      lanes.append(step.el);
+    } else this.body.append(step.el);
+    this.refresh();
+    return step;
+  }
+
+  remove(step) {
+    const at = this.steps.indexOf(step);
+    if (at < 0) return;
+    this.steps.splice(at, 1);
+    const parent = step.el.parentNode;
+    step.el.remove();
+    if (parent?.matches('.lanes') && !parent.firstChild) parent.remove();
+    this.refresh();
+  }
+
+  /** Rewrites the summary line from the steps and, for the group the run is in, from the run's state. */
+  refresh() {
+    const live = this.owner.active === this ? this.owner.live : null;
+    const thinks = this.steps.filter(s => s.kind === 'think'), tools = this.steps.filter(s => s.kind !== 'think');
+    const cards = tools.filter(s => s.card).map(s => s.card);
+    const called = step => STEP_NAMES[step.card?.name || step.name] || step.card.name;
+    const about = step => `${called(step)} ${step.card ? step.card.summary : step.summary}`.trim();
+
+    // Thoughts alone show their text at once; beside tools each sits behind its own toggle.
+    const solo = !tools.length;
+    if (solo) thinks.forEach(s => { s.el.open = true; });
+    else if (this.solo) thinks.forEach(s => { s.el.open = Boolean(s.active); });
+    this.solo = solo;
+    this.el.hidden = !this.steps.length;
+    this.el.classList.toggle('solo', solo);
+
+    const running = tools.filter(s => s.card?.state === 'running');
+    const thinking = thinks.find(s => s.active);
+    const ms = this.ms + thinks.reduce((n, s) => n + (s.ms || 0), 0);
+    let state = 'done', label, digest = '', fail = '', time = '';
+    let one = running.length === 1 ? running[0] : null; // the step the line is about, when it is about one
+    if (live?.state === 'waiting') {
+      [state, label, digest] = ['waiting', 'Waiting for you', one ? about(one) : tally(running.map(called))];
+    } else if (one) {
+      [state, label, digest] = ['running', called(one), one.card.summary];
+    } else if (running.length) {
+      const agents = running.every(s => s.card.name === 'agent');
+      [state, label, digest] = ['running', agents ? `${running.length} sub-agents running` : `Running ${running.length} tools`, agents ? '' : tally(running.map(called))];
+    } else if (thinking || live?.state === 'thinking') {
+      const since = thinking?.since || Date.parse(live.since);
+      [state, label, time] = ['thinking', 'Thinking', since ? fmtElapsed(Date.now() - since) : ''];
+    } else if (live) {
+      [state, label] = ['running', {retrying: 'Retrying', compacting: 'Compacting'}[live.state] || 'Working'];
+    } else if (solo) {
+      [state, label] = ['thought', ms ? `Thought for ${fmtDuration(ms)}` : 'Thought'];
+    } else {
+      one = tools.length === 1 ? tools[0] : null;
+      const agents = tools.every(s => s.card?.name === 'agent');
+      const stopped = cards.some(c => c.state === 'stopped'), failed = cards.filter(c => c.state === 'error').length;
+      state = stopped ? 'stopped' : 'done';
+      label = stopped ? 'Stopped' : agents ? (one ? 'Ran a sub-agent' : `Ran ${tools.length} sub-agents`)
+        : !one ? `Used ${tools.length} tools` : one.card ? `Used ${called(one)}` : 'Searched the web';
+      digest = one ? (stopped ? about(one) : one.card ? one.card.summary : one.summary)
+        : agents ? cards.map(c => c.summary).join(', ') : tally(tools.map(called));
+      fail = !failed ? '' : one ? 'failed' : `${failed} failed`;
+      time = ms ? fmtDuration(ms) : '';
+    }
+
+    const cmd = Boolean(one?.card) && one.card.name !== 'agent'; // a command or a path, not names
+    const shown = [state, label, digest, fail, time, cmd].join('\n');
+    if (shown === this.shown) return;
+    this.shown = shown;
+    if (this.el.dataset.state !== state) { // a spinner that is replaced starts its turn over
+      this.el.dataset.state = state;
+      this.mark.replaceChildren(...state === 'running' ? [h('span.spinner')] : state === 'stopped' ? [icon('stop', 12)] : []);
+    }
+    this.label.textContent = label;
+    this.digest.textContent = digest;
+    this.digest.classList.toggle('cmd', cmd);
+    this.failed.replaceChildren(...fail ? [icon('x', 12), fail] : []);
+    this.time.textContent = time;
+  }
+}
 
 // ---------------------------------------------------------------- tool cards
 
 class ToolCard {
   constructor(owner, call) {
-    Object.assign(this, {owner, id: call.id, name: call.name, input: call.input, args: '', output: '', media: [], touched: false});
+    Object.assign(this, {owner, id: call.id, name: call.name, input: call.input, args: '', output: '', media: []});
     this.head = h('span.tool-args');
     this.status = h('span.tool-status');
     this.body = h('div.tool-body');
     this.el = h('details.tool', {ontoggle: () => this.renderBody()},
-      h('summary', {onclick: () => { this.touched = true; }},
-        icon(TOOL_ICONS[this.name] || 'cube', 16), h('span.tool-name', this.name), this.head, this.status),
+      h('summary', icon(TOOL_ICONS[this.name] || 'cube', 16), h('span.tool-name', this.name), this.head, this.status),
       this.body);
     this.setState('running');
     this.renderHead();
@@ -126,10 +245,13 @@ class ToolCard {
     this.state = this.el.dataset.state = state;
     const mark = {running: h('span.spinner'), error: icon('x', 14), stopped: icon('stop', 12)}[state] || icon('check', 14);
     this.status.replaceChildren(ms != null ? h('span.tool-time', fmtDuration(ms)) : '', mark, h('span.sr-only', STATE_LABELS[state]));
+    this.work?.refresh();
   }
 
+  /** summary is the call in one line; its work group shows it too. */
   renderHead() {
-    this.head.textContent = String(toolSummary(this.name, this.params) ?? '').trim().replace(/\s*\n\s*/g, ' ⏎ ');
+    this.head.textContent = this.summary = String(toolSummary(this.name, this.params) ?? '').trim().replace(/\s*\n\s*/g, ' ⏎ ');
+    this.work?.refresh();
   }
 
   renderBody() {
@@ -160,10 +282,9 @@ class ToolCard {
     this.renderBody();
   }
 
-  /** Live output opens the card until the tool is done, unless the user took over the toggle. */
+  /** Live output fills the card if it is open. Only the user opens it. */
   addOutput(text) {
     this.output += text;
-    if (!this.el.open && !this.touched) this.auto = this.el.open = true;
     if (this.out) this.showOutput(); else this.renderBody();
   }
 
@@ -186,8 +307,9 @@ class ToolCard {
     const {ms, ui} = result.ui || {};
     this.ui = ui;
     this.output = result.text || '';
-    this.setState(result.isError ? 'error' : 'ok', ms);
-    if (this.auto && !this.touched) this.el.open = false;
+    // A call the user stopped comes back as an error: it reads as stopped, not as failed.
+    const stopped = result.isError && /^Stopped by the user\.$|\[stopped by the user\]$/.test(this.output);
+    this.setState(stopped ? 'stopped' : result.isError ? 'error' : 'ok', ms);
     this.renderHead();
     this.renderBody();
   }
@@ -201,7 +323,9 @@ class Lane extends ToolCard {
     const parts = [p.name || child?.title || promptTitle(p.prompt) || 'Sub-agent', child?.model || p.model || S.chats.get(this.owner.id)?.model, state];
     if (parts.join('\n') === this.shown) return;
     this.shown = parts.join('\n');
+    this.summary = parts[0];
     this.head.replaceChildren(h('span.lane-name', parts[0]), modelLabel(parts[1], 'lane-model'), h('span.lane-state' + (live ? '.busy' : ''), parts[2]));
+    this.work?.refresh();
   }
 
   setState(state, ms) {
@@ -250,6 +374,7 @@ export class Transcript {
     this.records = [];
     this.cards = new Map(); // tool call id → card
     this.nested = [];       // transcripts of opened sub-agent lanes
+    this.work = null;       // the work group that steps join, until text or a message ends it
     this.live = null;
     this.stream = null;     // the reply being written
     this.loading = true;
@@ -301,9 +426,31 @@ export class Transcript {
 
   tick() {
     const think = this.stream?.think;
-    const elapsed = think && think.ms == null ? fmtElapsed(Date.now() - think.since) : '';
+    const elapsed = think?.active ? fmtElapsed(Date.now() - think.since) : '';
     if (elapsed && think.timer.textContent !== elapsed) think.timer.textContent = elapsed;
+    this.active?.refresh();
     this.nested.forEach(t => t.tick());
+  }
+
+  // ---- work groups
+
+  /** The group the run is working in right now: the open one, unless the reply has moved on to its text. */
+  get active() {
+    const s = this.stream;
+    return this.live ? s?.tail || (s?.el ? null : this.work) : null;
+  }
+
+  /** The open group. The first step after text, a message or a note starts a new one. */
+  group() {
+    if (!this.work) this.el.append((this.work = new Work(this)).el);
+    return this.work;
+  }
+
+  /** Ends the open group: whatever shows in the chat next comes after it. */
+  closeWork() {
+    const work = this.work;
+    this.work = null;
+    if (work && !work.steps.length) work.el.remove(); else work?.refresh();
   }
 
   // ---- records
@@ -318,49 +465,66 @@ export class Transcript {
     } else if (rec.t === 'compact') {
       node = this.compacted(rec);
     } else if (msg?.role === 'assistant') {
-      node = this.assistantMessage(rec, this.endStream());
+      this.assistantMessage(rec, this.endStream());
     } else if (msg) {
       node = this.userMessage(rec, index);
       if (node && fresh) node.classList.add('enter');
     }
-    if (node) this.el.append(node);
+    if (!node) return;
+    this.closeWork();
+    this.el.append(node);
   }
 
   /** The divider that marks a compaction. The summary the model just wrote moves inside it. */
   compacted(rec) {
     const said = this.lastReply;
-    if (said && said.text.trim() === (rec.summary || '').trim()) said.el.remove();
+    if (said && said.text.trim() === (rec.summary || '').trim()) said.drop();
     return h('details.compact',
       h('summary', h('span', 'Context compacted', rec.tokens ? ` · was ${fmtTokens(rec.tokens)} tokens` : '', chevron())),
       h('div.prose', renderMarkdown(rec.summary || '')));
   }
 
-  assistantMessage(rec, thoughtMs) {
-    const el = h('article.msg.assistant');
-    const texts = [];
-    let lanes = null;
+  /**
+   * An assistant message. Its thinking, tool calls and searches join the open
+   * work group; its text goes into the chat and ends that group, so that steps
+   * after the text start the next one. was is what endStream() reported.
+   */
+  assistantMessage(rec, was) {
+    const texts = [], articles = [], steps = [];
+    let article = null;
+    const step = st => {
+      const reopen = !this.work && articles.length && was.open; // the group the user opened while it streamed
+      steps.push(this.group().add(st, rec));
+      if (reopen) this.work.el.open = true;
+      article = null;
+    };
     for (const b of rec.msg.blocks) {
-      const agent = b.type === 'tool_call' && b.name === 'agent';
-      if (!agent) lanes = null;
-      if (b.type === 'thinking' && b.text) el.append(thinkingBlock(b.text, thoughtMs || b.ui?.ms));
-      else if (b.type === 'text' && b.text.trim()) { texts.push(b.text); el.append(h('div.prose', renderMarkdown(b.text))); }
-      else if (b.type === 'opaque' && b.name === 'web_search') el.append(h('div.searched', icon('globe', 14), b.text ? 'Searched: ' + b.text : 'Searched the web'));
-      else if (agent) (lanes ||= el.appendChild(h('div.lanes'))).append(this.addCard(b).el); // parallel sub-agents sit side by side
-      else if (b.type === 'tool_call') el.append(this.addCard(b).el);
+      if (b.type === 'thinking' && b.text) step(thinkStep(b.text, was.ms || b.ui?.ms));
+      else if (b.type === 'opaque' && b.name === 'web_search') step(searchStep(b.text));
+      else if (b.type === 'tool_call') { const card = this.addCard(b); step({kind: 'tool', card, el: card.el}); }
+      else if (b.type === 'text' && b.text.trim()) {
+        this.closeWork();
+        if (!article) this.el.append(articles[articles.length] = article = h('article.msg.assistant'));
+        texts.push(b.text);
+        article.append(h('div.prose', renderMarkdown(b.text)));
+      }
     }
-    if (!el.firstChild) return null;
-    if (texts.length) {
-      const u = rec.usage;
-      el.append(h('div.msg-actions', copyButton(() => texts.join('\n\n')),
-        h('span', {title: u ? `${u.input.toLocaleString()} tokens in · ${u.output.toLocaleString()} out` : null}, modelLabel(rec.msg.model))));
-      this.lastReply = {el, text: texts.join('\n')};
-    }
-    return el;
+    if (!texts.length) return;
+    const u = rec.usage;
+    articles.at(-1).append(h('div.msg-actions', copyButton(() => texts.join('\n\n')),
+      h('span', {title: u ? `${u.input.toLocaleString()} tokens in · ${u.output.toLocaleString()} out` : null}, modelLabel(rec.msg.model))));
+    this.lastReply = {text: texts.join('\n'), drop: () => {
+      articles.forEach(a => a.remove());
+      for (const st of steps) {
+        st.work.remove(st);
+        if (!st.work.steps.length && st.work !== this.work) st.work.el.remove();
+      }
+    }};
   }
 
   userMessage(rec, index) {
     const u = parseUser(rec.msg);
-    if (u.results.length) return this.toolResults(u);
+    if (u.results.length) return this.toolResults(u, index);
     if (rec.msg.synthetic) return u.text.startsWith('<summary>') ? null : harnessNote(u.text);
     const actions = h('div.msg-actions', u.time && h('span.muted', {title: u.time}, u.time.split(' ')[1]), copyButton(() => u.text));
     if (this.opts.onFork) {
@@ -378,13 +542,22 @@ export class Transcript {
     return el;
   }
 
-  /** Hands each result to its call. Only harness remarks and unclaimed media need a node of their own. */
-  toolResults(u) {
+  /**
+   * Hands each result to its call, which leaves the work group open. Only
+   * harness remarks and unclaimed media need a node of their own.
+   */
+  toolResults(u, index) {
     const cards = u.results.map(result => {
       const card = this.cards.get(result.id);
       card?.finish(result);
       return card;
     });
+    // The group's time counts this batch once: calls that ran side by side took no longer than the records are apart.
+    const work = cards.find(Boolean)?.work;
+    const wall = Date.parse(this.records[index].time) - Date.parse(this.records[index - 1]?.time);
+    const each = u.results.reduce((n, r) => n + (r.ui?.ms || 0), 0);
+    if (work) { work.ms += wall >= 0 ? Math.min(wall, each) : each; work.refresh(); }
+
     const stray = u.media.filter(f => {
       const reader = cards.find(c => c?.name === 'read' && String(c.params.path || '').split(/[\\/]/).pop() === f.name);
       reader?.addMedia(f);
@@ -422,31 +595,37 @@ export class Transcript {
 
   // ---- the reply in progress
 
+  /** steps are what the reply has put into work groups so far; its record replaces them. */
   startStream() {
-    if (!this.stream) {
-      this.stream = {el: h('article.msg.assistant.live'), text: '', thinking: '', cards: new Map()};
-      this.el.append(this.stream.el);
-    }
-    return this.stream;
+    return this.stream ||= {text: '', thinking: '', cards: new Map(), steps: []};
+  }
+
+  /** A step of the reply in progress joins the open group, or a group of its own once the reply has text. */
+  liveStep(s, step) {
+    if (s.el && !s.tail) this.el.append((s.tail = new Work(this)).el);
+    s.steps.push((s.tail || this.group()).add(step, s));
+    return step;
   }
 
   startThinking(s) {
     const body = h('div.thinking-text'), label = h('span', 'Thinking'), timer = h('span.timer');
     const since = this.live?.state === 'thinking' ? Date.parse(this.live.since) : Date.now();
-    s.think = {body, label, timer, since, el: h('details.thinking.active', {open: true}, h('summary', chevron(), label, timer), body)};
-    s.el.prepend(s.think.el);
+    s.think = this.liveStep(s, {kind: 'think', active: true, since, body, label, timer,
+      el: h('details.thinking.active', {open: true}, h('summary', chevron(), label, timer), body)});
     this.tick();
   }
 
-  /** Closes the thinking block. The duration is unknown when the page loaded after thinking ended. */
+  /** Closes the thinking step. The duration is unknown when the page loaded after thinking ended. */
   endThinking(s, known = true) {
     const think = s.think;
-    if (!think || think.ms != null) return;
+    if (!think?.active) return;
+    think.active = false;
     think.ms = known ? Date.now() - think.since : 0;
     think.el.classList.remove('active');
     think.el.open = false;
     think.label.textContent = known ? `Thought for ${fmtDuration(think.ms)}` : 'Thought';
     think.timer.textContent = '';
+    think.work.refresh();
   }
 
   setThinking(s, text) {
@@ -456,10 +635,19 @@ export class Transcript {
     s.think.body.scrollTop = s.think.body.scrollHeight;
   }
 
+  /** The reply's text takes its place in the chat; the steps before it are complete. */
+  startText(s) {
+    if (s.el) return;
+    const prose = h('div.prose.streaming');
+    s.markdown = new LiveMarkdown(prose);
+    this.el.append(s.el = h('article.msg.assistant.live', prose));
+    this.work?.refresh();
+  }
+
   streamCard(s, tool) {
     const card = this.makeCard(tool);
     s.cards.set(tool.id, card);
-    s.el.append(card.el);
+    this.liveStep(s, {kind: 'tool', card, el: card.el});
     return card;
   }
 
@@ -476,32 +664,37 @@ export class Transcript {
     }
   }
 
-  /** Renders the streamed text at most once per frame. */
+  /** Renders the streamed text at most once per frame. Blank text, which some models put before a call, is no reply yet. */
   paint() {
+    const s = this.stream;
+    if (!s.text.trim()) return;
+    this.startText(s);
     this.frame ||= requestAnimationFrame(() => {
       this.frame = 0;
-      const s = this.stream;
-      if (!s) return;
-      if (!s.markdown) {
-        const prose = h('div.prose.streaming');
-        if (s.think) s.think.el.after(prose); else s.el.prepend(prose);
-        s.markdown = new LiveMarkdown(prose);
-      }
-      s.markdown.update(s.text);
+      if (!this.stream?.markdown) return;
+      this.stream.markdown.update(this.stream.text);
       this.opts.onChange?.();
     });
   }
 
-  /** Removes the reply in progress (its record replaces it) and reports how long it thought. */
+  /**
+   * Removes the reply in progress, which its record replaces. Reports how
+   * long it thought, and whether the user had opened the group that followed
+   * its text, so that the record's own group opens the same way.
+   */
   endStream() {
     const s = this.stream;
-    if (!s) return 0;
+    if (!s) return {ms: 0, open: false};
     this.endThinking(s);
     cancelAnimationFrame(this.frame);
     this.frame = 0;
-    s.el.remove();
     this.stream = null;
-    return s.think?.ms || 0;
+    s.el?.remove();
+    for (const step of s.steps) {
+      step.work.remove(step);
+      if (!step.work.steps.length && step.work !== this.work) step.work.el.remove(); // the open group stays for the record
+    }
+    return {ms: s.think?.ms || 0, open: Boolean(s.tail?.el.open)};
   }
 
   onLive(live) {
@@ -509,11 +702,13 @@ export class Transcript {
     if (!live) {
       this.endStream();
       for (const card of this.cards.values()) if (card.state === 'running') card.setState('stopped');
+      this.closeWork();
     } else {
       // A request that starts over (first attempt or a retry) discards what the last one streamed.
       const fresh = live.state === 'thinking' && !live.text && !live.thinking && !live.tools?.length;
       if (fresh || live.state === 'retrying') this.endStream();
       for (const tool of live.tools || []) this.cards.get(tool.id)?.sync(tool);
+      this.work?.refresh();
     }
     this.opts.onLive?.(live);
   }
@@ -527,6 +722,7 @@ export class Transcript {
     this.live = live;
     if (!live) {
       for (const card of this.cards.values()) if (card.state === 'running') card.setState('stopped');
+      this.closeWork();
       return;
     }
     const tools = live.tools || [];
@@ -536,10 +732,11 @@ export class Transcript {
       if (live.thinking) this.setThinking(s, live.thinking);
       if (live.text || tools.length) this.endThinking(s, false);
       s.text = live.text || '';
-      if (s.text) this.paint();
+      this.paint();
       for (const tool of tools) if (!this.cards.has(tool.id)) this.streamCard(s, tool);
     }
     for (const tool of tools) this.cards.get(tool.id)?.sync(tool);
+    this.work?.refresh();
     this.opts.onLive?.(live);
   }
 }
