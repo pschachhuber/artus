@@ -235,6 +235,9 @@ func fromThisMachine(r *http.Request) bool {
 	if device == nil {
 		return false
 	}
+	if device.IsLoopback() {
+		return true
+	}
 	addrs, _ := net.InterfaceAddrs()
 	for _, a := range addrs {
 		if ipnet, ok := a.(*net.IPNet); ok && ipnet.IP.Equal(device) {
