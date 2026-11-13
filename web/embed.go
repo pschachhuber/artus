@@ -7,7 +7,7 @@ import (
 	"io/fs"
 )
 
-//go:embed index.html style.css *.js
+//go:embed index.html style.css *.js manifest.json icon.svg *.png
 var files embed.FS
 
 // Files returns the interface's files.

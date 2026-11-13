@@ -24,6 +24,7 @@ import (
 	"github.com/pschachhuber/artus/internal/sched"
 	"github.com/pschachhuber/artus/internal/secrets"
 	"github.com/pschachhuber/artus/internal/store"
+	"github.com/pschachhuber/artus/internal/tailscale"
 )
 
 type fakeBrowser struct{ ran [][]string }
@@ -67,7 +68,7 @@ func newFixture(t *testing.T) *fixture {
 	}, engine.Fire)
 	engine.Sched = scheduler
 	f := &fixture{t: t, mock: mock, browser: &fakeBrowser{}, token: home.Config().Server.Token}
-	ui := fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>Artus</title>")}}
+	ui := fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>Artus</title>")}, "manifest.json": {Data: []byte("{}")}}
 	f.srv = New(Server{Home: home, Engine: engine, Secrets: sec, LLM: reg, Sched: scheduler, Browser: f.browser, UI: ui, Version: "test"})
 	f.ts = httptest.NewServer(f.srv.Handler())
 	t.Cleanup(func() { engine.Shutdown(); f.ts.Close() })
@@ -190,6 +191,189 @@ func TestAccessControl(t *testing.T) {
 	resp, _ = f.do("GET", "/", nil)
 	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") || strings.Contains(csp, "unsafe") {
 		t.Errorf("interface CSP = %q", csp)
+	}
+}
+
+func TestRemoteAccess(t *testing.T) {
+	f := newFixture(t)
+	f.srv.Tailscale = func() (*tailscale.CLI, bool) { return nil, false }
+	const host = "vm.tail1234.ts.net"
+	// What `tailscale serve` sends for a device of this account: its name as Host, and who it is.
+	ts := func(login string, more ...string) []string {
+		h := []string{"Authorization", "", "Host", host, "X-Forwarded-Proto", "https", "X-Forwarded-For", "100.101.102.103"}
+		if login != "" {
+			h = append(h, "Tailscale-User-Login", login)
+		}
+		return append(h, more...)
+	}
+	paul := ts("paul@example.com")
+
+	// Until setup has run, the Tailscale name is just another unknown host.
+	if got := f.status("GET", "/api/state", nil, paul...); got != 403 {
+		t.Errorf("Tailscale name before setup: %d", got)
+	}
+	for _, bad := range []string{"http://vm.tail1234.ts.net", "https://vm.tail1234.ts.net/artus", "vm.tail1234.ts.net", "https://user@vm.tail1234.ts.net"} {
+		if got := f.status("PUT", "/api/remote", store.Remote{URL: bad, Users: []string{"paul@example.com"}}); got != 400 {
+			t.Errorf("remote address %q accepted: %d", bad, got)
+		}
+	}
+	var saved store.Remote
+	f.call("PUT", "/api/remote", store.Remote{URL: "https://VM.tail1234.ts.net/", Users: []string{" paul@example.com ", "Paul@Example.com", ""}}, &saved)
+	if saved.URL != "https://"+host || len(saved.Users) != 1 || saved.Users[0] != "paul@example.com" {
+		t.Fatalf("saved remote = %+v", saved)
+	}
+
+	// The account setup allowed is signed in without a token, and the interface knows how.
+	var state struct {
+		Access access
+		Config store.Config
+	}
+	resp, body := f.do("GET", "/api/state", nil, paul...)
+	if resp.StatusCode != 200 || json.Unmarshal(body, &state) != nil || state.Access != (access{Via: "tailscale", User: "paul@example.com"}) {
+		t.Fatalf("allowed account: %d %s", resp.StatusCode, body)
+	}
+	if state.Config.Remote.URL != "https://"+host || state.Config.Server.Token != "" {
+		t.Errorf("state config = %+v", state.Config)
+	}
+	if got := f.status("GET", "/", nil, paul...); got != 200 {
+		t.Errorf("interface for the allowed account: %d", got)
+	}
+	if got := f.status("GET", "/api/state", nil, ts("PAUL@example.com")...); got != 200 {
+		t.Errorf("login in another case: %d", got)
+	}
+	if got := f.status("GET", "/api/state", nil, ts("paul@example.com", "Host", host+":443")...); got != 200 {
+		t.Errorf("host with the default port: %d", got)
+	}
+
+	// Anyone else on the tailnet is told why they stay out; the API just refuses.
+	resp, body = f.do("GET", "/", nil, ts("eve@example.com")...)
+	if resp.StatusCode != 403 || !strings.Contains(string(body), "eve@example.com") || !strings.Contains(string(body), "artus setup --user") {
+		t.Errorf("other account: %d %s", resp.StatusCode, body)
+	}
+	if got := f.status("GET", "/api/state", nil, ts("eve@example.com")...); got != 401 {
+		t.Errorf("other account on the API: %d", got)
+	}
+	resp, body = f.do("GET", "/", nil, ts("<b>@example.com")...)
+	if strings.Contains(string(body), "<b>@") {
+		t.Errorf("login not escaped: %s", body)
+	}
+	// A tagged or shared device has no account. It can still use the sign-in link.
+	resp, body = f.do("GET", "/", nil, ts("")...)
+	if resp.StatusCode != 401 || !strings.Contains(string(body), "artus url") {
+		t.Errorf("device without an account: %d %s", resp.StatusCode, body)
+	}
+	resp, _ = f.do("GET", "/?token="+f.token, nil, ts("")...)
+	if cookie := resp.Header.Get("Set-Cookie"); resp.StatusCode != 303 || !strings.Contains(cookie, "Secure") {
+		t.Errorf("sign-in link over HTTPS: %d %q", resp.StatusCode, cookie)
+	}
+
+	// A browser on the server itself, such as the one the agent drives, is not signed in this way.
+	resp, body = f.do("GET", "/", nil, ts("paul@example.com", "X-Forwarded-For", "127.0.0.1")...)
+	if resp.StatusCode != 401 || !strings.Contains(string(body), "machine Artus runs on") {
+		t.Errorf("the server's own browser: %d %s", resp.StatusCode, body)
+	}
+	if got := f.status("GET", "/api/state", nil, ts("paul@example.com", "X-Forwarded-For", "127.0.0.1")...); got != 401 {
+		t.Errorf("the server's own browser on the API: %d", got)
+	}
+
+	// The account header counts only at the Tailscale address, where Tailscale itself sets it.
+	if got := f.status("GET", "/api/state", nil, "Authorization", "", "Tailscale-User-Login", "paul@example.com"); got != 401 {
+		t.Errorf("account header at the local address: %d", got)
+	}
+	away := httptest.NewRequest("GET", "https://"+host+"/api/state", nil)
+	away.RemoteAddr = "192.168.1.20:50000"
+	away.Header.Set("Tailscale-User-Login", "paul@example.com")
+	if got := tailscaleLogin(away); got != "" {
+		t.Errorf("account header from another machine trusted: %q", got)
+	}
+	away.RemoteAddr = "127.0.0.1:50000"
+	away.Header.Set("Tailscale-User-Login", "=?utf-8?q?j=C3=BCrgen@example.com?=")
+	if got := tailscaleLogin(away); got != "jürgen@example.com" {
+		t.Errorf("encoded login = %q", got)
+	}
+
+	// The account comes with every request a browser makes, so another site
+	// must not be able to make it send one that changes or reads anything.
+	origin := "https://" + host
+	if got := f.status("POST", "/api/chats", map[string]string{}, ts("paul@example.com", "Origin", origin)...); got != 200 {
+		t.Errorf("the interface's own POST: %d", got)
+	}
+	if got := f.status("POST", "/api/chats", map[string]string{}, paul...); got != 403 {
+		t.Errorf("POST without an origin: %d", got)
+	}
+	if got := f.status("POST", "/api/chats", map[string]string{}, ts("paul@example.com", "Origin", "https://other.tail1234.ts.net")...); got != 403 {
+		t.Errorf("POST from another machine's page: %d", got)
+	}
+	for _, site := range []string{"cross-site", "same-site"} {
+		if got := f.status("GET", "/api/state", nil, ts("paul@example.com", "Sec-Fetch-Site", site)...); got != 403 {
+			t.Errorf("%s GET: %d", site, got)
+		}
+	}
+	if got := f.status("GET", "/api/state", nil, ts("paul@example.com", "Sec-Fetch-Site", "same-origin")...); got != 200 {
+		t.Errorf("same-origin GET: %d", got)
+	}
+	if got := f.status("GET", "/", nil, ts("paul@example.com", "Sec-Fetch-Site", "cross-site")...); got != 200 {
+		t.Errorf("following a link to the interface: %d", got)
+	}
+
+	// Funnel would put Artus on the public internet: refused whatever else the request carries.
+	resp, body = f.do("GET", "/", nil, "Host", host, "Tailscale-Funnel-Request", "?1")
+	if resp.StatusCode != 403 || !strings.Contains(string(body), "public internet") {
+		t.Errorf("Funnel request: %d %s", resp.StatusCode, body)
+	}
+
+	// Who may come in is decided on the server, with the token; not by someone who came in through Tailscale.
+	more := store.Remote{URL: origin, Users: []string{"paul@example.com", "eve@example.com"}}
+	if got := f.status("PUT", "/api/remote", more, ts("paul@example.com", "Origin", origin)...); got != 403 {
+		t.Errorf("remote settings changed through Tailscale: %d", got)
+	}
+	cfg := f.srv.Home.Config()
+	cfg.Remote = more
+	if got := f.status("PUT", "/api/config", cfg, ts("paul@example.com", "Origin", origin)...); got != 200 {
+		t.Errorf("saving settings through Tailscale: %d", got)
+	}
+	if got := f.srv.Home.Config().Remote.Users; len(got) != 1 {
+		t.Errorf("the settings page changed who is allowed: %v", got)
+	}
+
+	// The home-screen files are fetched without credentials.
+	if got := f.status("GET", "/manifest.json", nil, "Authorization", ""); got != 200 {
+		t.Errorf("manifest without sign-in: %d", got)
+	}
+	if got := f.status("POST", "/manifest.json", nil, "Authorization", ""); got == 200 {
+		t.Errorf("manifest took a POST without sign-in")
+	}
+
+	// The remote access page: what is configured, and what Tailscale says.
+	var page struct {
+		URL       string
+		Users     []string
+		Installed bool
+		Tailscale *tailscale.Status
+		Published *tailscale.Publication
+	}
+	f.call("GET", "/api/remote", nil, &page)
+	if page.URL != origin || page.Installed || page.Tailscale != nil {
+		t.Errorf("remote page without Tailscale: %+v", page)
+	}
+	f.srv.Engine.ServerURL = "http://127.0.0.1:7717"
+	f.srv.Tailscale = func() (*tailscale.CLI, bool) {
+		return &tailscale.CLI{Run: func(_ context.Context, _ *tailscale.Terminal, argv ...string) ([]byte, error) {
+			if argv[1] == "status" {
+				return []byte(`{"BackendState":"Running","Self":{"DNSName":"vm.tail1234.ts.net.","UserID":7},"User":{"7":{"LoginName":"paul@example.com"}},"CertDomains":["vm.tail1234.ts.net"]}`), nil
+			}
+			return []byte(`{"TCP":{"443":{"HTTPS":true}},"Web":{"vm.tail1234.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:7717"}}}}}`), nil
+		}}, true
+	}
+	f.call("GET", "/api/remote", nil, &page)
+	if !page.Installed || page.Tailscale == nil || page.Tailscale.User != "paul@example.com" || page.Published == nil || page.Published.URL != origin {
+		t.Errorf("remote page with Tailscale: %+v", page)
+	}
+
+	// Turning remote access off closes the Tailscale name again.
+	f.call("PUT", "/api/remote", store.Remote{}, nil)
+	if got := f.status("GET", "/api/state", nil, paul...); got != 403 {
+		t.Errorf("Tailscale name after removal: %d", got)
 	}
 }
 

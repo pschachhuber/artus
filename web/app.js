@@ -156,6 +156,7 @@ function cycleTheme() {
   if (next === 'auto') delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = next;
   try { next === 'auto' ? localStorage.removeItem('artus-theme') : localStorage.setItem('artus-theme', next); } catch { /* not remembered */ }
+  paintThemeColor(); // from theme.js
   changed();
 }
 
@@ -246,7 +247,25 @@ function buildSidebar() {
 
 // ---------------------------------------------------------------- start
 
+/**
+ * Keeps the frame as tall as what is visible. A phone's keyboard covers the
+ * page without resizing it where the browser does not do that itself (iOS),
+ * which would hide the composer or push the header out of view.
+ */
+function fitViewport() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const fit = () => {
+    if (Math.abs(vv.scale - 1) > .01) return; // pinch-zoomed: the page keeps its size
+    document.documentElement.style.setProperty('--app-h', Math.round(vv.height) + 'px');
+    if (vv.offsetTop > 0) scrollTo(0, 0);
+  };
+  vv.addEventListener('resize', fit);
+  fit();
+}
+
 async function start() {
+  fitViewport();
   await connect();
   const search = buildSidebar();
   const scrim = document.getElementById('scrim');

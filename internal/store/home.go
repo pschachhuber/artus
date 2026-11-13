@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -285,6 +286,7 @@ type Config struct {
 	Limits        Limits   `json:"limits"`
 	Context       Context  `json:"context"`
 	Server        Server   `json:"server"`
+	Remote        Remote   `json:"remote"`
 	Secrets       Secrets  `json:"secrets"`
 }
 
@@ -311,6 +313,39 @@ type Server struct {
 	Token string `json:"token"`
 }
 
+// Remote says how Artus is reached from other devices. `artus setup` fills it
+// in after publishing Artus on the user's tailnet with `tailscale serve`.
+type Remote struct {
+	URL   string   `json:"url"`   // https://machine.tailnet.ts.net, where Tailscale serves Artus
+	Users []string `json:"users"` // Tailscale accounts that are signed in when they arrive there
+}
+
+// Clean returns r as it is stored: the address reduced to scheme and host,
+// the accounts trimmed and without repeats. An address that is not an HTTPS
+// one is an error, because everything else about remote access relies on
+// Tailscale's certificate.
+func (r Remote) Clean() (Remote, error) {
+	out := Remote{Users: []string{}}
+	if addr := strings.TrimSpace(r.URL); addr != "" {
+		u, err := url.Parse(addr)
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || strings.Trim(u.Path, "/") != "" {
+			return out, fmt.Errorf("the remote address must look like https://machine.tailnet.ts.net, not %q", addr)
+		}
+		out.URL = "https://" + strings.ToLower(u.Host)
+	}
+	for _, user := range r.Users {
+		user = strings.TrimSpace(user)
+		known := user == "" || strings.ContainsAny(user, " \t\r\n,")
+		for _, have := range out.Users {
+			known = known || strings.EqualFold(have, user)
+		}
+		if !known {
+			out.Users = append(out.Users, user)
+		}
+	}
+	return out, nil
+}
+
 // Secrets selects where secret values come from.
 type Secrets struct {
 	Backend string `json:"backend"` // env | protonpass
@@ -327,6 +362,7 @@ func defaultConfig() Config {
 		Limits:        Limits{Subagents: 8, Depth: 1, Turns: 80, TaskTokens: 3_000_000},
 		Context:       Context{CompactAt: 0.7, CompactMaxTokens: 200_000, ToolOutputChars: 30_000, DefaultWindow: 200_000},
 		Server:        Server{Host: "127.0.0.1", Port: 7717},
+		Remote:        Remote{Users: []string{}},
 		Secrets:       Secrets{Backend: "env"},
 	}
 }
@@ -345,6 +381,9 @@ func (h *Home) loadConfig() error {
 	}
 	if cfg.Server.Token == "" {
 		cfg.Server.Token = RandomID(24)
+	}
+	if cfg.Remote.Users == nil {
+		cfg.Remote.Users = []string{}
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -366,6 +405,7 @@ func (h *Home) Config() Config {
 	defer h.mu.Unlock()
 	c := h.cfg
 	c.AllowedModels = append([]string{}, h.cfg.AllowedModels...)
+	c.Remote.Users = append([]string{}, h.cfg.Remote.Users...)
 	return c
 }
 
@@ -376,6 +416,9 @@ func (h *Home) UpdateConfig(fn func(*Config)) error {
 	fn(&h.cfg)
 	if h.cfg.AllowedModels == nil {
 		h.cfg.AllowedModels = []string{}
+	}
+	if h.cfg.Remote.Users == nil {
+		h.cfg.Remote.Users = []string{}
 	}
 	return h.saveConfig()
 }

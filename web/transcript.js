@@ -382,6 +382,14 @@ export class Transcript {
     this.frame = 0;
     this.abort = new AbortController();
     bus.addEventListener('server', e => this.onEvent(e.detail), {signal: this.abort.signal});
+    // Where nothing can hover, tapping a message shows its actions (see .tapped in the stylesheet).
+    this.el.addEventListener('click', e => {
+      const msg = e.target.closest('.msg');
+      if (!msg || msg.closest('.transcript') !== this.el || e.target.closest('button, a, summary, .tool, .thumb')) return;
+      const shown = msg.classList.contains('tapped');
+      for (const m of this.el.querySelectorAll(':scope > .msg.tapped')) m.classList.remove('tapped');
+      msg.classList.toggle('tapped', !shown);
+    });
   }
 
   destroy() {
@@ -513,6 +521,9 @@ export class Transcript {
     const u = rec.usage;
     articles.at(-1).append(h('div.msg-actions', copyButton(() => texts.join('\n\n')),
       h('span', {title: u ? `${u.input.toLocaleString()} tokens in · ${u.output.toLocaleString()} out` : null}, modelLabel(rec.msg.model))));
+    this.lastSaid?.classList.remove('last'); // a touch screen shows the actions of the newest reply only, the others when tapped
+    this.lastSaid = articles.at(-1);
+    this.lastSaid.classList.add('last');
     this.lastReply = {text: texts.join('\n'), drop: () => {
       articles.forEach(a => a.remove());
       for (const st of steps) {

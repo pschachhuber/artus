@@ -1,6 +1,7 @@
 // settings.js — the Settings page and the first-run setup card.
 
-import {S, bus, changed, chevron, watch, h, fill, icon, api, saveConfig, toast, confirmDialog, promptDialog, pageHead, modelName, fmtDate} from './lib.js';
+import {S, bus, changed, chevron, watch, h, fill, icon, api, saveConfig, toast, confirmDialog, promptDialog, pageHead, modelName, fmtDate,
+  copyButton} from './lib.js';
 import {renderMarkdown} from './markdown.js';
 import {modelPicker, docPane} from './pages.js';
 
@@ -198,6 +199,63 @@ function secretsSection(el, signal) {
       h('button.btn', {type: 'button', onclick: () => saveConfig({secrets: {backend: 'env', vault: ''}})}, 'Turn off')));
 }
 
+/** How Artus is reached from other devices. What it shows is set on the server by `artus setup`. */
+function remoteSection(el, signal) {
+  const body = h('div.remote');
+  const cmd = text => h('code.cmd', text, copyButton(() => text));
+  const note = (kind, text) => h('p.' + kind, icon(kind === 'updated' ? 'check' : 'alert', 16), h('span', text));
+
+  const render = r => {
+    const ts = r.tailscale, who = r.users.join(' or ');
+    if (!r.url) {
+      return fill(body,
+        h('p.lede', 'Artus answers only on the machine it runs on. To use it from your phone and your other computers, run this on that machine:'),
+        cmd('artus setup'),
+        h('ul.remote-points',
+          h('li', 'It publishes Artus on your own Tailscale network at a private https address. Nothing is opened to the public internet.'),
+          h('li', 'Devices signed in to Tailscale with your account open Artus without any further sign-in.'),
+          h('li', 'It makes Artus start when the machine starts.')),
+        !r.installed ? h('p.muted', 'Tailscale is not installed on this machine yet. Setup offers to install it.') : null);
+    }
+    const problems = [
+      !r.installed && 'Tailscale was not found on this machine, so the address below does not work right now.',
+      r.error,
+      ts && ts.state !== 'Running' && `Tailscale on this machine is not connected (${ts.state}). Run “sudo tailscale up” there.`,
+      ts?.state === 'Running' && !r.published && 'Tailscale is no longer serving Artus. Run “artus setup” on this machine to publish it again.',
+      r.published && r.published.url !== r.url && `Tailscale now serves Artus at ${r.published.url}. Run “artus setup” on this machine to use that address.`,
+      r.published?.funnel && 'Tailscale Funnel is on for this address. Artus refuses requests from the public internet; turn Funnel off with “tailscale funnel reset”.',
+      !r.users.length && 'No Tailscale account is let in yet. Run “artus setup --user you@example.com” on this machine.',
+    ].filter(Boolean);
+    fill(body,
+      problems.length ? problems.map(p => note('blocked', p)) : note('updated', 'Artus is reachable from your tailnet.'),
+      h('section.boxed.remote-address',
+        h('a.remote-url', {href: r.url}, r.url), copyButton(() => r.url, 'Copy address'),
+        h('p.muted', 'Only devices on your Tailscale network can open it, and the connection is encrypted by Tailscale.')),
+      h('dl.facts',
+        h('dt', 'Signed in without a link'), h('dd', r.users.length ? r.users.join(', ') : 'nobody'),
+        h('dt', 'You are here'), h('dd', r.access.via === 'tailscale' ? `through Tailscale, as ${r.access.user}` : 'through the sign-in link'),
+        ts?.name ? [h('dt', 'This machine'), h('dd', ts.name)] : null),
+      h('h2', 'Add a device'),
+      h('ol.steps',
+        h('li', h('h3', 'Install Tailscale on it'), h('p.muted', `From tailscale.com/download or the app store. Sign in as ${who || 'the account that owns this machine'}.`)),
+        h('li', h('h3', 'Open the address above'), h('p.muted', 'There is nothing else to sign in to.')),
+        h('li', h('h3', 'Keep it as an app'), h('p.muted', 'On a phone, use “Add to Home Screen” (iPhone: the share button; Android: the browser menu). Artus then opens full screen from its own icon.'))),
+      h('h2', 'Change who may come in'),
+      h('p.muted', 'This is decided on the machine Artus runs on, not from a browser.'),
+      h('dl.facts.remote-cmds',
+        h('dt', 'Let another Tailscale account in'), h('dd', cmd('artus setup --user someone@example.com')),
+        h('dt', 'Turn remote access off'), h('dd', cmd('artus setup --remove'))));
+  };
+  const load = async () => {
+    const r = await api('GET', '/api/remote');
+    if (r && !signal.aborted) render(r);
+  };
+  bus.addEventListener('server', e => { if (e.detail.type === 'config') load(); }, {signal});
+  fill(el, h('h2', 'Remote access'), body);
+  fill(body, h('p.muted', 'Checking…'));
+  load();
+}
+
 /** A git patch with additions, removals and hunk headers tinted. */
 function patchView(text) {
   const kind = line => /^(diff |index |--- |\+\+\+ |new file|deleted file|similarity|rename )/.test(line) ? '.meta'
@@ -320,7 +378,8 @@ function aboutSection(el) {
 
 const SECTIONS = [
   ['models', 'Models', modelsSection], ['behaviour', 'Behaviour', behaviourSection], ['instructions', 'Instructions', instructionsSection],
-  ['secrets', 'Secrets', secretsSection], ['changes', 'Changes', changesSection], ['updates', 'Updates', updatesSection],
+  ['secrets', 'Secrets', secretsSection], ['remote', 'Remote access', remoteSection], ['changes', 'Changes', changesSection],
+  ['updates', 'Updates', updatesSection],
   ['about', 'About', aboutSection],
 ];
 

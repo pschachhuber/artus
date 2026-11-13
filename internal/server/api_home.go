@@ -329,6 +329,7 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 	in.Context.ToolOutputChars = clamp(in.Context.ToolOutputChars, 2000, 2_000_000)
 	err := s.Home.UpdateConfig(func(c *store.Config) {
 		in.Server.Token = c.Server.Token // never set through the API
+		in.Remote = c.Remote             // who may come in from elsewhere is decided on the server: see putRemote
 		*c = in
 	})
 	if err != nil {

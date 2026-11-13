@@ -107,5 +107,6 @@
     if ((($env:Path -split ';') | ForEach-Object { $_.TrimEnd('\') }) -notcontains $dir.TrimEnd('\')) {
         $env:Path = "$env:Path;$dir"
     }
-    Write-Host 'Start it with: artus'
+    Write-Host 'To use it from your phone and other devices: artus setup'
+    Write-Host 'On this computer only: artus'
 }

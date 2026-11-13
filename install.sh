@@ -83,9 +83,13 @@ main() {
 	installed=$("$dir/artus" version) || fail "$dir/artus was installed but does not run here"
 	echo "Installed $installed to $dir/artus"
 	case ":$PATH:" in
-	*":$dir:"*) echo "Start it with: artus" ;;
+	*":$dir:"*)
+		echo "On a server, to use it from your phone and other devices: artus setup"
+		echo "On this computer only: artus"
+		;;
 	*)
-		echo "Start it with: $dir/artus"
+		echo "On a server, to use it from your phone and other devices: $dir/artus setup"
+		echo "On this computer only: $dir/artus"
 		case ${SHELL:-} in
 		*/zsh) profile=~/.zshrc ;;
 		*/bash) if [ "$os" = darwin ]; then profile=~/.bash_profile; else profile=~/.bashrc; fi ;;

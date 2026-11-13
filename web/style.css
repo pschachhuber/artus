@@ -108,8 +108,8 @@ textarea.input { resize: vertical; line-height: 1.5; }
 
 /* ---------------------------------------------------------------- frame */
 
-#app { display: grid; grid-template-columns: var(--side-w) minmax(0, 1fr); height: 100dvh; transition: grid-template-columns .18s ease; }
-#main { display: flex; min-width: 0; height: 100dvh; outline: none; }
+#app { display: grid; grid-template-columns: var(--side-w) minmax(0, 1fr); height: var(--app-h, 100dvh); transition: grid-template-columns .18s ease; }
+#main { display: flex; min-width: 0; height: var(--app-h, 100dvh); padding-inline: env(safe-area-inset-left) env(safe-area-inset-right); outline: none; }
 #sidebar { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 12px 10px; background: var(--side); border-right: 1px solid var(--border); overflow: hidden; }
 .side-collapsed #app { grid-template-columns: 0 minmax(0, 1fr); }
 .side-collapsed #sidebar { visibility: hidden; padding-inline: 0; border: 0; }
@@ -241,6 +241,16 @@ select.input { width: auto; }
 .release-head a { margin-left: auto; }
 .notes summary { display: inline-flex; align-items: center; gap: 4px; min-height: 36px; font-size: 13.5px; color: var(--text-2); }
 .notes .prose { font-size: 14px; }
+.remote { display: grid; gap: 14px; justify-items: start; }
+.remote > * { min-width: 0; max-width: 100%; }
+.remote > h2 { margin: 16px 0 0; }
+.remote > .steps { margin-top: 4px; gap: 16px; }
+.remote-address { justify-self: stretch; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.remote-address .muted { flex-basis: 100%; }
+.remote-url { font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+.remote-points { display: grid; gap: 6px; padding-left: 20px; font-size: 14px; color: var(--text-2); }
+.cmd { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 2px 4px 2px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--sunken); font-size: 13px; overflow-wrap: anywhere; }
+.remote-cmds { align-items: center; }
 .setup { margin: 5vh 0 24px; padding: 24px 26px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); }
 .setup > h2 { font-size: 22px; letter-spacing: -.01em; }
 .steps { display: grid; gap: 22px; margin-top: 20px; padding: 0; list-style: none; counter-reset: step; }
@@ -519,18 +529,34 @@ dialog { color: var(--text); }
   .split-side { border: 0; }
   .split:not(.has-selection) .split-main, .split.has-selection .split-side { display: none; }
   .bubble { max-width: 92%; }
-  .msg-actions { opacity: 1; }
+  #sidebar { padding-top: max(12px, env(safe-area-inset-top)); padding-bottom: max(12px, env(safe-area-inset-bottom)); padding-left: max(10px, env(safe-area-inset-left)); }
   .kv { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .key-name { width: auto; flex: 1; }
   .meter-track { width: 56px; }
   .task-actions .btn { flex: 1 1 auto; }
   .rows > .row { flex-wrap: wrap; }
+  .remote-cmds { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .remote-cmds dd { margin-bottom: 10px; }
 }
 @media (min-width: 761px) {
   .only-narrow { display: none; }
 }
+/* Touch screens. Nothing hovers there, so a message shows its actions when
+   tapped, and the newest ones always; controls are sized for a thumb; and
+   fields are 16px, below which iOS zooms the page when one is focused. */
 @media (hover: none) {
-  .msg-actions, .chat-row .more { opacity: 1; }
+  .chat-row .more { opacity: 1; }
+  .msg-actions { display: none; opacity: 1; }
+  .msg.last > .msg-actions, .msg.tapped > .msg-actions { display: flex; }
+}
+@media (pointer: coarse) {
+  input, textarea, select, .side-search .input, .editor { font-size: 16px; }
+  .btn, .pill, .ghost, .icon-btn, .input, .chat-row a, .side-nav a, .menu button, .option, .tabs a, .tabs button, .title-btn { min-height: 44px; }
+  .icon-btn { width: 44px; }
+  .chat-row .more { width: 40px; }
+  .stop { min-height: 40px; }
+  .send { width: 44px; height: 44px; }
+  .side-search .icon { top: 14px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, ::before, ::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }

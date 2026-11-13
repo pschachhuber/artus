@@ -1,7 +1,8 @@
 # Artus
 
-A minimal personal agent harness. One small binary gives you a local web interface, an agent that keeps its own notes, runs tasks on a schedule, drives a real browser and handles your secrets without ever seeing them.
+A minimal personal agent harness. One small binary on a machine of your own gives you a web interface you can use from all your devices, an agent that keeps its own notes, runs tasks on a schedule, drives a real browser and handles your secrets without ever seeing them.
 
+- **Set up once, use from anywhere.** Install it on a server, a virtual machine or a computer that stays on, run `artus setup`, and open it from your laptop or your phone. It is reached over your own [Tailscale](https://tailscale.com) network: nothing is opened to the public internet, and there is no password to set or remember.
 - **One file, nothing to install.** A single executable of about 12 MB for macOS, Windows and Linux. No runtime, no database, no third-party code: Artus is written in Go using only the standard library.
 - **Everything is a file.** Memory, notes, skills, tasks and conversations are plain Markdown and JSON in one folder. The agent manages them with ordinary file tools, and you can read, edit, back up or sync them with anything.
 - **Small fixed context.** The system prompt and the ten built-in tools take about 3,800 tokens. Everything else is loaded when it is needed.
@@ -13,6 +14,7 @@ A minimal personal agent harness. One small binary gives you a local web interfa
 ## Contents
 
 - [Quick start](#quick-start)
+- [Remote access](#remote-access)
 - [How it is organised](#how-it-is-organised)
 - [Context and memory](#context-and-memory)
 - [Tools](#tools)
@@ -29,7 +31,9 @@ A minimal personal agent harness. One small binary gives you a local web interfa
 
 ## Quick start
 
-1. Install it. On macOS or Linux, in a terminal:
+Artus is meant to run on a machine that stays on (a small server, a virtual machine, a spare computer) and to be used from wherever you are. It also runs on the computer in front of you: see [On one computer only](#on-one-computer-only).
+
+1. Install it on that machine. On macOS or Linux, in a terminal:
 
    ```bash
    curl -fsSL https://raw.githubusercontent.com/pschachhuber/artus/main/install.sh | sh
@@ -43,11 +47,31 @@ A minimal personal agent harness. One small binary gives you a local web interfa
 
    The script downloads the program for your system from the [latest release](https://github.com/pschachhuber/artus/releases/latest), checks it against the release's `checksums.txt` and puts it in `~/.local/bin`, or on Windows in `%LOCALAPPDATA%\Programs\Artus`, which it adds to your PATH. Both are folders of your own, so Artus can update itself there. Set `ARTUS_INSTALL_DIR` to install elsewhere, or `ARTUS_VERSION` (such as `v0.1.0`) for a given release.
 
-2. Run `artus`. If the folder is not on your PATH, the script prints the full path to use.
+2. Set it up:
 
-3. Artus prints a link and opens it in your browser. Paste an API key for Anthropic, OpenAI or OpenRouter, pick a model, and start a chat.
+   ```bash
+   artus setup
+   ```
 
-**Downloading by hand.** Take the file for your system from the [latest release](https://github.com/pschachhuber/artus/releases/latest), check it against `checksums.txt` from the same release, and run it. On macOS and Linux make it executable first (`chmod +x artus_darwin_arm64`, then `./artus_darwin_arm64`).
+   Setup asks before each step that changes the machine, and can be run again at any time.
+
+   - It has [Tailscale](https://tailscale.com) serve Artus on your private network, at an address like `https://myserver.tail1234.ts.net`. If Tailscale is not installed or not signed in, setup offers to do that first.
+   - It lets the Tailscale account the machine belongs to open Artus without signing in to anything else.
+   - It makes Artus start when the machine starts.
+
+3. Open the address setup printed, on any device that is signed in to Tailscale with your account. Paste an API key for Anthropic, OpenAI or OpenRouter, pick a model, and start a chat.
+
+**On a phone.** Install the Tailscale app, sign in with the same account, and open the address. Use the browser's "Add to Home Screen" to keep Artus as an app with its own icon.
+
+[Remote access](#remote-access) explains what setup does and how to change or undo it.
+
+### On one computer only
+
+Run `artus`. It prints a link and opens it in your browser. Artus then answers on that computer only, for as long as the program runs.
+
+### Installing by hand
+
+**Downloading.** Take the file for your system from the [latest release](https://github.com/pschachhuber/artus/releases/latest), check it against `checksums.txt` from the same release, and run it. On macOS and Linux make it executable first (`chmod +x artus_darwin_arm64`, then `./artus_darwin_arm64`).
 
 | System | File |
 |---|---|
@@ -68,6 +92,21 @@ A browser marks what it saves as downloaded from the internet, and the system ch
 ```bash
 git clone https://github.com/pschachhuber/artus && cd artus && go build ./cmd/artus
 ```
+
+## Remote access
+
+Artus itself listens only on the machine it runs on. From anywhere else it is reached through [Tailscale](https://tailscale.com), a private network between your own devices that runs next to Artus as a separate program; its free personal plan is enough. Artus contains none of Tailscale: it drives the Tailscale program that is installed on the machine. No port is forwarded and nothing is opened to the public internet.
+
+- **The address.** `artus setup` runs `tailscale serve`, which serves Artus over HTTPS under the machine's Tailscale name, with a certificate Tailscale obtains. Only devices on your tailnet can open it. If something else is already served on port 443 of that machine, Artus takes 8443 or 10000.
+- **Signing in.** There is no password and no login page. Tailscale tells Artus which Tailscale account each request comes from, and Artus lets in the accounts setup recorded: the one the machine belongs to, and any you add with `artus setup --user someone@example.com`. Anyone else on your tailnet gets a page that says so.
+- **Devices without an account.** A shared or tagged device carries no account, so Tailscale has none to report. `artus url` on the server prints a link that signs such a browser in. On a server that is itself tagged, setup asks which account to let in.
+- **Not public.** Requests that arrive through Tailscale Funnel, which would put the address on the public internet, are refused.
+- **Starting by itself.** On Linux, setup installs a systemd service, `/etc/systemd/system/artus.service`, that runs Artus as your user; `journalctl -u artus` shows its output. On macOS it installs a launch agent that starts Artus when you log in, writing to `~/Library/Logs/artus.log`. On Windows, and on Linux without systemd, setup leaves this to you: have `artus serve --no-open` started when the machine starts.
+- **Seeing and undoing it.** **Settings › Remote access** shows the address, who is let in, and anything that is wrong. `artus setup --remove` stops Tailscale serving Artus, forgets the accounts and removes the service; your data is not touched.
+
+Who may come in is decided on the server: it can be changed with `artus setup` there, not from a browser.
+
+The Tailscale integration is written against the Tailscale 1.104 client and tested with a stand-in for it, and against a real client that was not signed in. It has not been run on a live tailnet, and the service has not been installed on a real systemd or macOS machine.
 
 ## How it is organised
 
@@ -195,7 +234,7 @@ Triggers are set with the `schedule` tool or by the agent itself:
 
 A trigger wakes either a task or a chat. "Remind me in two hours" wakes the same conversation.
 
-The scheduler runs inside Artus, so triggers fire only while it is running. One that came due while it was off fires once at the next start. To have tasks run reliably, start Artus when you log in; asking Artus to set that up for your system is a reasonable first job.
+The scheduler runs inside Artus, so triggers fire only while it is running. One that came due while it was off fires once at the next start. To have tasks run reliably, let `artus setup` make Artus start with the machine.
 
 ## Models
 
@@ -206,7 +245,7 @@ Model ids are written `provider/model`: `anthropic/claude-opus-5-5`, `openai/gpt
 - **The allowlist** names the models the agent may choose for sub-agents besides the default.
 - **Refusal fallbacks.** On Claude models where a safety classifier can decline a request, Artus opts into Anthropic's server-side fallback, so a declined request is re-served by a fallback model in the same call.
 
-Requests go straight from your machine to the provider. Apart from those, Artus contacts only GitHub, to look for updates (see [Updates](#updates)), and Google's Chrome for Testing downloads when it needs a browser and none is installed; the agent itself reaches whatever its tools reach.
+Requests go straight from your machine to the provider. Apart from those, Artus contacts only GitHub, to look for updates (see [Updates](#updates)), and Google's Chrome for Testing downloads when it needs a browser and none is installed; the agent itself reaches whatever its tools reach. `artus setup` runs Tailscale's installer if you agree to it, and Tailscale then talks to its own servers.
 
 ## The interface
 
@@ -215,7 +254,8 @@ A single page served from the binary: no framework, no build step, no external r
 - **Chats:** streaming text and reasoning, each run of steps folded into one line that opens to its tool cards with live output and diffs, sub-agent lanes, attachments by button, paste or drop, message queueing while the agent works, fork and retry.
 - **Context:** a meter in each chat, and an inspector showing what fills the context, which files are loaded, cache use, and the exact request that would be sent next.
 - **Tasks, Topics, Skills:** browse, edit, run, pause.
-- **Settings:** keys, default model and effort, the allowlist, limits, your instructions, secrets, and the change log with revert.
+- **Settings:** keys, default model and effort, the allowlist, limits, your instructions, secrets, remote access, and the change log with revert.
+- **Phones:** the same interface, laid out for a narrow screen and for touch. Added to the home screen it opens full screen under its own icon.
 
 All state lives in the server. Close the tab and the run continues; reopen it and you see exactly where it is.
 
@@ -225,7 +265,9 @@ Artus is a program that runs shell commands and drives a browser on your behalf.
 
 **What Artus enforces**
 
-- The server listens on `127.0.0.1` only, requires an access token, rejects requests whose `Host` is not this machine (DNS rebinding) and cross-origin writes (CSRF).
+- The server listens on `127.0.0.1` only. A request needs the access token or, at the address Tailscale serves, a Tailscale account that setup allowed. Requests whose `Host` is neither this machine nor that address are rejected (DNS rebinding), as are requests another site makes a browser send (CSRF), and anything that arrives through Tailscale Funnel.
+- A browser on the server itself is not signed in through Tailscale, so the browser the agent drives cannot open Artus as you.
+- Which Tailscale accounts are let in can be changed only with the access token, that is, on the server: not by someone who came in through Tailscale, and not on the Settings page.
 - The interface runs under a strict content security policy with no inline script, and files it displays are served sandboxed.
 - Secret values are kept out of the model's context and the transcripts, as described above.
 - Commands the agent runs get a separate token that reaches only the browser and secret-add endpoints. It cannot change settings. The interface's own token is replaced by `[secret:ARTUS_TOKEN]` wherever it turns up in what the model reads.
@@ -237,6 +279,7 @@ Artus is a program that runs shell commands and drives a browser on your behalf.
 **What it does not**
 
 - **There is no sandbox.** Shell commands run as you. An agent that is tricked by a web page or a file can do what you can do, including reading `config.json` and using the interface's token without ever seeing it. The locks and guards stop mistakes and casual injection; they are not a wall. Only a separate operating-system user, a virtual machine or a container makes them absolute. For unattended tasks with real credentials, use one of those.
+- **Remote sign-in trusts the server and your Tailscale account.** Tailscale's proxy runs on the server and tells Artus who is calling; Tailscale removes that claim from whatever a remote device sends, so it cannot be forged from another machine. A program that already runs on the server can make the same claim, just as it can read the access token there. And whoever can sign in to your Tailscale account, or picks up an unlocked device that is signed in, can use Artus: protect that account with two-step sign-in, and lock your devices.
 - **Redaction is best-effort.** It removes known values from text the model sees. It does not stop a command from sending a secret somewhere over the network.
 - **Prompt injection is unsolved.** Artus tells the model to treat tool output as information, and current models mostly comply, but no model is immune. Keep the autonomy setting on "confirm commands" for sensitive work, give the agent a dedicated Proton Pass vault with only what it needs, and set spending limits on your provider keys.
 
@@ -270,6 +313,7 @@ A release is installed only if it comes from this project's releases over HTTPS,
 | `context.toolOutputChars` | `30000` | Tool output kept in context |
 | `context.defaultWindow` | `200000` | Window assumed when a provider does not report one |
 | `server.host`, `server.port` | `127.0.0.1`, `7717` | Where the interface is served |
+| `remote.url`, `remote.users` | — | Set by `artus setup`: the address Tailscale serves Artus at, and the Tailscale accounts signed in there |
 | `secrets.backend`, `secrets.vault` | `env` | Set to `protonpass` and a vault name to use Proton Pass |
 
 Environment variables: `ARTUS_HOME` moves the data folder; `ARTUS_PROMPT` points to a file that replaces the base system prompt; `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `OPENROUTER_API_KEY` are used when no key is stored.
@@ -281,6 +325,7 @@ Environment variables: `ARTUS_HOME` moves the data folder; `ARTUS_PROMPT` points
 | `artus` | Starts Artus and opens the interface |
 | `artus serve --port N --no-open` | The same, with options |
 | `artus run "task"` | Runs one prompt and prints the answer, for scripts (`--model`, `--effort`) |
+| `artus setup` | Makes this machine an Artus server: reachable through Tailscale, started with the machine (`--user LOGIN`, `--yes`, `--remove`) |
 | `artus url` | Prints the link that signs a browser in |
 | `artus browser <command>` | Drives the browser; `artus browser help` lists commands |
 | `artus secret add NAME` | Stores a secret read from standard input |
@@ -312,6 +357,7 @@ To try the interface without a key, start with `ARTUS_MOCK=1` and choose the mod
 | `internal/sched` | Triggers and cron |
 | `internal/secrets` | The secret registry, Proton Pass references, redaction, TOTP |
 | `internal/store` | The data folder: configuration, transcripts, indexes, change log |
+| `internal/tailscale` | Reads the machine's Tailscale state and publishes Artus with `tailscale serve`, through the Tailscale client |
 | `internal/server` | HTTP API, event stream, access control |
 | `internal/update` | Finding, verifying and installing releases |
 | `web` | The interface |

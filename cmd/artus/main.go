@@ -34,6 +34,12 @@ Usage:
   artus serve [flags]        the same, with options
       --port N               listen on this port (default: from config, 7717)
       --no-open              do not open a browser window
+  artus setup [flags]        make this machine an Artus server: reachable from
+                             your other devices through Tailscale, and started
+                             when the machine starts
+      --user LOGIN           also let this Tailscale account in
+      --yes                  answer every question with yes
+      --remove               undo what setup did
   artus run [flags] "task"   run one prompt and print the answer
       --model provider/id    model to use (default: from config)
       --effort level         low | medium | high | xhigh | max
@@ -60,6 +66,8 @@ func main() {
 		err = runOnce(args)
 	case "url":
 		err = printURL()
+	case "setup":
+		err = setupCommand(args)
 	case "browser":
 		err = browserCommand(args)
 	case "secret":
@@ -119,7 +127,12 @@ func serve(args []string) error {
 		fmt.Printf("Updated from %s.\n", updatedFrom)
 		go a.updates.Check(background) // so the interface shows a current check, not "never"
 	}
-	fmt.Printf("Artus %s\n  home  %s\n  open  %s\n", version, a.home.Dir, url)
+	fmt.Printf("Artus %s\n  home    %s\n  open    %s\n", version, a.home.Dir, url)
+	if remote := a.home.Config().Remote; remote.URL != "" {
+		fmt.Printf("  remote  %s  (Tailscale: %s)\n", remote.URL, strings.Join(remote.Users, ", "))
+	} else {
+		fmt.Println("  To use Artus from your phone and other devices, run: artus setup")
+	}
 	if a.home.Config().Model == "" {
 		fmt.Println("  Add an API key and choose a model in Settings to get started.")
 	}

@@ -174,7 +174,8 @@ class ChatView {
     if (setup && !this.setup) this.setup = setupCard(this.abort.signal);
     if (!setup) this.setup = null;
     this.empty ||= h('div.empty', h('h2', 'What should we work on?'),
-      h('p.muted', 'Ask a question, hand over a job, or drop in files. Enter sends, Shift+Enter starts a new line.'));
+      h('p.muted', matchMedia('(pointer: coarse)').matches ? 'Ask a question, hand over a job, or attach files.'
+        : 'Ask a question, hand over a job, or drop in files. Enter sends, Shift+Enter starts a new line.'));
     const gone = this.missing ? h('div.empty', h('p', 'This chat does not exist (any more).'), h('a.btn', {href: '#/'}, 'Start a new chat')) : null;
     const want = [this.setup, gone || this.transcript?.el || (this.setup ? null : this.empty), this.asks].filter(Boolean);
     if (want.length !== this.column.children.length || want.some((node, i) => node !== this.column.children[i])) this.column.replaceChildren(...want);

@@ -188,7 +188,7 @@ func (a *app) listen(port int) (string, error) {
 	go a.http.Serve(ln)
 
 	url := base + "/?token=" + cfg.Token
-	state, _ := json.Marshal(map[string]any{"url": base, "pid": os.Getpid()})
+	state, _ := json.Marshal(map[string]any{"url": base, "pid": os.Getpid(), "managed": managed()})
 	os.WriteFile(a.home.Path(stateFile), state, 0o600)
 	return url, nil
 }
